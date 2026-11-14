@@ -1,6 +1,6 @@
 'use strict';
 /* Stash — budget mensuel. Données stockées uniquement sur l'appareil (localStorage). */
-var KEY = 'stash.v1', VERSION = '1.2';
+var KEY = 'stash.v1', VERSION = '1.3';
 
 /* ---------- calculs (purs) ---------- */
 function r2(n){ return Math.round((n + Number.EPSILON) * 100) / 100; }
@@ -73,6 +73,25 @@ function stats(S, p){
     saved: r2(rev - dep), bal: r2(start + rev - dep - ep), resteDep: r2(resteDep), resteRev: r2(resteRev),
     resteFixe: r2(resteFixe), proj: r2(start + rev - dep - ep - resteDep - resteEp + resteRev) };
 }
+/* Saisie automatique : une catégorie fixe avec un jour du mois (c.auto) est enregistrée toute seule quand ce jour est atteint.
+   L'appli ne tourne pas en arrière-plan : le rattrapage se fait à l'ouverture, avec la bonne date. Renvoie le nombre d'opérations ajoutées. */
+function autoRun(S, today){
+  var n = 0;
+  S.cats.forEach(function(c){
+    if (!c.auto || !c.fixed || !(c.plan > 0) || c.opens || !c.autoFrom) return;
+    for (var m = c.autoFrom.slice(0, 7); m <= today.slice(0, 7); m = addM(m, 1)){
+      var dim = new Date(+m.slice(0, 4), +m.slice(5, 7), 0).getDate(), d = m + '-' + pad(Math.min(c.auto, dim));
+      if (d < c.autoFrom || d > today || (c.autoLast && d <= c.autoLast)) continue;
+      c.autoLast = d; // une échéance n'est traitée qu'une fois : une ligne supprimée à la main ne revient pas
+      var pm = addM(m, -1), prev = pm + '-' + pad(Math.min(c.auto, new Date(+pm.slice(0, 4), +pm.slice(5, 7), 0).getDate()));
+      if (S.tx.some(function(t){ return t.cat === c.id && t.date > prev && t.date <= d; })) continue; // déjà saisie à la main depuis la dernière échéance
+      var t = { id: uid(), date: d, amt: c.plan, type: c.type, cat: c.id, note: '', auto: true, pot: c.type === 'ep' ? (c.pot || '') : '' };
+      S.tx.push(t); n++;
+      if (t.pot) S.pots.forEach(function(q){ if (q.id === t.pot) q.bal = r2(q.bal + t.amt); });
+    }
+  });
+  return n;
+}
 function defaults(){
   var i = 0, c = function(name, type, fixed, opens){ return { id: 'c' + (++i), name: name, type: type, plan: 0, fixed: !!fixed, opens: !!opens }; };
   return { app: 'stash', v: 1, anchor: null, tx: [], pots: [],
@@ -85,7 +104,7 @@ function validState(o){
     o.tx.every(function(t){ return t && /^\d{4}-\d{2}-\d{2}$/.test(t.date) && isFinite(t.amt); });
 }
 function normalize(o){
-  o.cats.forEach(function(c){ c.plan = r2(+c.plan || 0); c.fixed = !!c.fixed; c.opens = !!c.opens && c.type === 'rev'; });
+  o.cats.forEach(function(c){ c.plan = r2(+c.plan || 0); c.fixed = !!c.fixed; c.opens = !!c.opens && c.type === 'rev'; c.auto = Math.min(31, Math.max(0, parseInt(c.auto, 10) || 0)); });
   o.tx.forEach(function(t){ t.amt = r2(+t.amt); if (!t.id) t.id = uid(); if (t.type !== 'rev' && t.type !== 'ep') t.type = 'dep'; });
   if (!Array.isArray(o.pots)) o.pots = [];
   o.pots.forEach(function(p){ p.bal = r2(+p.bal || 0); if (!p.id) p.id = uid(); });
@@ -95,7 +114,7 @@ function normalize(o){
 }
 function uid(){ return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
 
-if (typeof module !== 'undefined') module.exports = { r2: r2, parseAmt: parseAmt, addM: addM, balAt: balAt, periods: periods, curIndex: curIndex, dayAdd: dayAdd, dayDiff: dayDiff, stats: stats, defaults: defaults, validState: validState, normalize: normalize, mkey: mkey };
+if (typeof module !== 'undefined') module.exports = { r2: r2, parseAmt: parseAmt, addM: addM, balAt: balAt, periods: periods, curIndex: curIndex, dayAdd: dayAdd, dayDiff: dayDiff, stats: stats, autoRun: autoRun, defaults: defaults, validState: validState, normalize: normalize, mkey: mkey };
 
 /* ---------- interface ---------- */
 if (typeof document !== 'undefined') (function(){
@@ -193,7 +212,7 @@ if (typeof document !== 'undefined') (function(){
     return '<div class="row"><button class="dot' + rev + (done ? ' done' : '') + '" data-act="' + (done ? 'edit' : 'add') + '" data-id="' + (last ? last.id : '') + '" data-cat="' + c.id + '" aria-label="' + esc(c.name) + '">' +
       (done ? CH.ok : esc(c.name.charAt(0).toUpperCase())) + '</button>' +
       '<button class="g" style="text-align:left" data-act="' + (done ? 'edit' : 'add') + '" data-id="' + (last ? last.id : '') + '" data-cat="' + c.id + '"><div class="t">' + esc(c.name) + '</div><div class="s num">' +
-      (done ? (c.type === 'rev' ? 'Reçu le ' : c.type === 'ep' ? 'Versé le ' : 'Payé le ') + dShort(last.date) : 'Prévu ' + fmt(c.plan)) + (pp ? ' · vers ' + esc(pp.name) : '') + '</div></button>' +
+      (done ? (c.type === 'rev' ? 'Reçu le ' : c.type === 'ep' ? 'Versé le ' : 'Payé le ') + dShort(last.date) : 'Prévu ' + fmt(c.plan)) + (pp ? ' · vers ' + esc(pp.name) : '') + (!done && c.auto ? ' · auto le ' + c.auto : '') + '</div></button>' +
       (done ? '<div class="a num">' + fmt(real) + '</div>' : '') +
       // le revenu qui démarre le mois garde son bouton : l'encaisser de nouveau ouvre le mois suivant
       (!done || (c.opens && UI.i === CI && dayDiff(P().start, TODAY) >= MINP)
@@ -207,8 +226,9 @@ if (typeof document !== 'undefined') (function(){
     tx.forEach(function(t, i){
       if (t.date !== day){ if (day) h += '</div>'; day = t.date; h += '<div class="day">' + esc(dLabel(day)) + '</div><div class="list">'; }
       var rev = t.type === 'rev', tp = t.type === 'ep' ? pot(t.pot) : null;
+      var sub = [t.note ? cname(t) : '', tp ? 'vers ' + tp.name : '', t.auto ? 'automatique' : ''].filter(Boolean).join(' · ');
       h += '<button class="row" data-act="edit" data-id="' + t.id + '"><div class="dot' + tcls(t.type) + '">' + esc(cname(t).charAt(0).toUpperCase()) + '</div><div class="g"><div class="t">' +
-        esc(t.note || cname(t)) + '</div>' + (t.note || tp ? '<div class="s">' + esc(t.note ? cname(t) : '') + (t.note && tp ? ' · ' : '') + (tp ? 'vers ' + esc(tp.name) : '') + '</div>' : '') + '</div><div class="a num ' + (rev ? 'pos' : t.type === 'ep' ? 'amb' : '') + '">' + (rev ? '+' : '−') + fmt(t.amt) + '</div></button>';
+        esc(t.note || cname(t)) + '</div>' + (sub ? '<div class="s">' + esc(sub) + '</div>' : '') + '</div><div class="a num ' + (rev ? 'pos' : t.type === 'ep' ? 'amb' : '') + '">' + (rev ? '+' : '−') + fmt(t.amt) + '</div></button>';
     });
     return h + '</div>';
   }
@@ -238,7 +258,7 @@ if (typeof document !== 'undefined') (function(){
     var h = '<div class="top"><div class="month"><h1 style="text-align:left;min-width:0;padding-left:4px">Réglages</h1></div></div>';
     var grp = function(type, title){
       return '<h2>' + title + '</h2><div class="list">' + S.cats.filter(function(c){ return c.type === type; }).map(function(c){
-        return '<button class="row" data-act="cat" data-id="' + c.id + '"><div class="g"><div class="t">' + esc(c.name) + '</div><div class="s">' + (c.fixed ? 'Fixe, chaque mois' : 'Variable') + (type === 'ep' && pot(c.pot) ? ' · vers ' + esc(pot(c.pot).name) : '') + '</div></div><div class="a num">' + fmt(c.plan) + '</div></button>';
+        return '<button class="row" data-act="cat" data-id="' + c.id + '"><div class="g"><div class="t">' + esc(c.name) + '</div><div class="s">' + (c.fixed ? 'Fixe, chaque mois' : 'Variable') + (c.auto ? ' · auto le ' + c.auto : '') + (type === 'ep' && pot(c.pot) ? ' · vers ' + esc(pot(c.pot).name) : '') + '</div></div><div class="a num">' + fmt(c.plan) + '</div></button>';
       }).join('') + '<button class="row" data-act="cat" data-type="' + type + '"><div class="dot' + tcls(type) + '">+</div><div class="g"><div class="t">Ajouter une catégorie</div></div></button></div>';
     };
     h += grp('dep', 'Dépenses prévues') + grp('ep', 'Épargne prévue') + grp('rev', 'Revenus prévus');
@@ -260,7 +280,9 @@ if (typeof document !== 'undefined') (function(){
   }
 
   function render(){
-    var w = !S.anchor; $('#nav').hidden = w; sync();
+    var w = !S.anchor; $('#nav').hidden = w;
+    if (!w){ var na = autoRun(S, iso(new Date())); if (na){ save(); toast(na + (na > 1 ? ' opérations automatiques ajoutées' : ' opération automatique ajoutée')); } }
+    sync();
     $('#app').innerHTML = w ? vWelcome() : UI.tab === 'ops' ? vOps() : UI.tab === 'bilan' ? vBilan() : UI.tab === 'regl' ? vRegl() : vMois();
     [].forEach.call(document.querySelectorAll('nav .tab'), function(b){ b.classList.toggle('on', b.dataset.tab === UI.tab); });
   }
@@ -293,6 +315,8 @@ if (typeof document !== 'undefined') (function(){
             : '<p class="hint">Aucun placement pour l’instant. Ajoute-le d’abord dans l’onglet Bilan (PEA, LDDS…).</p>') : '') +
         '<label class="chk"><input type="checkbox" id="f-fixed"' + (f.fixed ? ' checked' : '') + '>Montant fixe, une fois par mois</label>' +
         '<p class="hint">Fixe : loyer, abonnement, salaire — à cocher d’un geste chaque mois. Variable : un budget à ne pas dépasser.</p>' +
+        '<label class="f" for="f-auto">Saisie automatique : jour du mois (facultatif)</label><input class="in" id="f-auto" inputmode="numeric" maxlength="2" placeholder="Vide = à cocher à la main" autocomplete="off" value="' + esc(f.auto) + '">' +
+        '<p class="hint">Pour un virement ou un prélèvement programmé : l’appli enregistre l’opération toute seule ce jour-là, à ta prochaine ouverture.</p>' +
         '<div class="err" id="f-err"></div><button class="btn" data-act="f-save">Enregistrer</button>' + (f.id ? '<button class="btn danger" style="margin-top:10px" data-act="f-del">Supprimer la catégorie</button>' : '');
     } else if (f.kind === 'pot'){
       h = head(f.id ? 'Placement' : 'Nouveau placement') + '<label class="f" for="f-name">Nom</label><input class="in" id="f-name" maxlength="30" autocomplete="off" value="' + esc(f.name) + '">' +
@@ -313,7 +337,7 @@ if (typeof document !== 'undefined') (function(){
   function grab(){ // garde ce qui est tapé avant de redessiner le panneau
     var f = UI.form, g = function(id){ var e = $('#' + id); return e ? e.value : undefined; };
     if (!f) return;
-    ['amt', 'date', 'note', 'name'].forEach(function(k){ var v = g('f-' + k); if (v !== undefined) f[k] = v; });
+    ['amt', 'date', 'note', 'name', 'auto'].forEach(function(k){ var v = g('f-' + k); if (v !== undefined) f[k] = v; });
     var fx = $('#f-fixed'); if (fx) f.fixed = fx.checked;
     var fp = $('#f-pot'); if (fp) f.pot = fp.value;
   }
@@ -338,10 +362,15 @@ if (typeof document !== 'undefined') (function(){
       if (!name) return fail('Donne un nom à la catégorie.');
       if (f.amt !== '' && !(a >= 0)) return fail('Montant prévu invalide.');
       if (f.type === 'ep' && !pot(f.pot)) return fail('Choisis le placement qui reçoit les versements.');
+      var as = String(f.auto == null ? '' : f.auto).trim(), au = as === '' ? 0 : (/^\d{1,2}$/.test(as) ? +as : -1);
+      if (au < 0 || au > 31) return fail('Jour de saisie automatique : un nombre entre 1 et 31.');
+      if (au && !(a > 0)) return fail('La saisie automatique demande un montant prévu.');
       var c = f.id ? cat(f.id) : null;
+      if (au && c && c.opens) return fail('Ce revenu démarre le mois : il s’encaisse à la main.');
       if (!c){ c = { id: uid() }; S.cats.push(c); }
-      c.name = name; c.type = f.type; c.plan = a >= 0 ? a : 0; c.fixed = !!f.fixed;
+      c.name = name; c.type = f.type; c.plan = a >= 0 ? a : 0; c.fixed = !!f.fixed || !!au;
       if (f.type === 'ep') c.pot = f.pot;
+      if ((c.auto || 0) !== au){ c.auto = au; c.autoFrom = TODAY; delete c.autoLast; } // nouveau jour : on repart d'aujourd'hui, sans rattrapage du passé
     } else if (f.kind === 'pot'){
       var pn = (f.name || '').trim();
       if (!pn) return fail('Donne un nom au placement.');
@@ -355,7 +384,7 @@ if (typeof document !== 'undefined') (function(){
       S.anchor.amount = r2(S.anchor.amount + (a - stats(S, PS[CI]).bal));
       toast('Solde recalé');
     } else if (f.kind === 'debut'){
-      S.cats.forEach(function(c){ c.opens = c.type === 'rev' && c.id === f.cat; }); UI.i = -1;
+      S.cats.forEach(function(c){ c.opens = c.type === 'rev' && c.id === f.cat; if (c.opens) c.auto = 0; }); UI.i = -1;
     }
     save(); closeSheet(); render();
   }
@@ -419,7 +448,7 @@ if (typeof document !== 'undefined') (function(){
     }
     else if (act === 'cat'){
       var k = d.id ? cat(d.id) : null;
-      UI.form = k ? { kind: 'cat', id: k.id, type: k.type, name: k.name, amt: plain(k.plan), fixed: k.fixed, pot: k.pot || '' } : { kind: 'cat', type: d.type || 'dep', name: '', amt: '', fixed: d.type === 'ep', pot: S.pots[0] ? S.pots[0].id : '' };
+      UI.form = k ? { kind: 'cat', id: k.id, type: k.type, name: k.name, amt: plain(k.plan), fixed: k.fixed, pot: k.pot || '', auto: k.auto ? String(k.auto) : '' } : { kind: 'cat', type: d.type || 'dep', name: '', amt: '', fixed: d.type === 'ep', pot: S.pots[0] ? S.pots[0].id : '', auto: '' };
       openSheet();
     }
     else if (act === 'pot'){
@@ -445,6 +474,7 @@ if (typeof document !== 'undefined') (function(){
   $('#veil').addEventListener('click', closeSheet);
   $('#file').addEventListener('change', function(){ if (this.files[0]) doImport(this.files[0]); });
   document.addEventListener('keydown', function(e){ if (e.key === 'Enter' && UI.form && e.target.tagName === 'INPUT'){ e.preventDefault(); saveForm(); } });
+  document.addEventListener('visibilitychange', function(){ if (!document.hidden && !UI.form) render(); });
   window.addEventListener('beforeinstallprompt', function(e){ e.preventDefault(); installEvt = e; if (UI.tab === 'regl') render(); });
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(function(){});
   render();
