@@ -1,6 +1,6 @@
 'use strict';
 /* Stash — budget mensuel. Données stockées uniquement sur l'appareil (localStorage). */
-var KEY = 'stash.v1', VERSION = '1.0';
+var KEY = 'stash.v1', VERSION = '1.1';
 
 /* ---------- calculs (purs) ---------- */
 function r2(n){ return Math.round((n + Number.EPSILON) * 100) / 100; }
@@ -26,22 +26,24 @@ function startBal(S, m){
   return r2(s);
 }
 function stats(S, m){
-  var dep = 0, rev = 0, by = {}, n = {};
+  var dep = 0, rev = 0, ep = 0, by = {}, n = {};
   txM(S, m).forEach(function(t){
-    if (t.type === 'rev') rev += t.amt; else dep += t.amt;
+    if (t.type === 'rev') rev += t.amt; else if (t.type === 'ep') ep += t.amt; else dep += t.amt;
     by[t.cat] = (by[t.cat] || 0) + t.amt; n[t.cat] = (n[t.cat] || 0) + 1;
   });
-  var pDep = 0, pRev = 0, resteDep = 0, resteRev = 0, resteFixe = 0;
+  var pDep = 0, pRev = 0, pEp = 0, resteDep = 0, resteRev = 0, resteFixe = 0, resteEp = 0;
   S.cats.forEach(function(c){
     var real = by[c.id] || 0;
     var reste = c.fixed ? (n[c.id] ? 0 : c.plan) : Math.max(0, c.plan - real);
     if (c.type === 'rev'){ pRev += c.plan; resteRev += reste; }
+    else if (c.type === 'ep'){ pEp += c.plan; resteEp += reste; }
     else { pDep += c.plan; resteDep += reste; if (c.fixed) resteFixe += reste; }
   });
   var start = startBal(S, m);
   return { dep: r2(dep), rev: r2(rev), by: by, n: n, pDep: r2(pDep), pRev: r2(pRev), start: start,
-    saved: r2(rev - dep), bal: r2(start + rev - dep), resteDep: r2(resteDep), resteRev: r2(resteRev),
-    resteFixe: r2(resteFixe), proj: r2(start + rev - dep - resteDep + resteRev) };
+    ep: r2(ep), pEp: r2(pEp), resteEp: r2(resteEp),
+    saved: r2(rev - dep), bal: r2(start + rev - dep - ep), resteDep: r2(resteDep), resteRev: r2(resteRev),
+    resteFixe: r2(resteFixe), proj: r2(start + rev - dep - ep - resteDep - resteEp + resteRev) };
 }
 function defaults(){
   var i = 0, c = function(name, type, fixed){ return { id: 'c' + (++i), name: name, type: type, plan: 0, fixed: !!fixed }; };
@@ -51,12 +53,12 @@ function defaults(){
 }
 function validState(o){
   return !!o && o.app === 'stash' && Array.isArray(o.cats) && Array.isArray(o.tx) &&
-    o.cats.every(function(c){ return c && c.id && typeof c.name === 'string' && (c.type === 'dep' || c.type === 'rev'); }) &&
+    o.cats.every(function(c){ return c && c.id && typeof c.name === 'string' && (c.type === 'dep' || c.type === 'rev' || c.type === 'ep'); }) &&
     o.tx.every(function(t){ return t && /^\d{4}-\d{2}-\d{2}$/.test(t.date) && isFinite(t.amt); });
 }
 function normalize(o){
   o.cats.forEach(function(c){ c.plan = r2(+c.plan || 0); c.fixed = !!c.fixed; });
-  o.tx.forEach(function(t){ t.amt = r2(+t.amt); if (!t.id) t.id = uid(); if (t.type !== 'rev') t.type = 'dep'; });
+  o.tx.forEach(function(t){ t.amt = r2(+t.amt); if (!t.id) t.id = uid(); if (t.type !== 'rev' && t.type !== 'ep') t.type = 'dep'; });
   if (!Array.isArray(o.pots)) o.pots = [];
   o.pots.forEach(function(p){ p.bal = r2(+p.bal || 0); if (!p.id) p.id = uid(); });
   if (!o.anchor || !isFinite(o.anchor.amount) || !/^\d{4}-\d{2}$/.test(o.anchor.month)) o.anchor = null;
@@ -81,6 +83,14 @@ if (typeof document !== 'undefined') (function(){
   }
   function save(){ try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { toast('Enregistrement impossible'); } }
   function cat(id){ for (var i = 0; i < S.cats.length; i++) if (S.cats[i].id === id) return S.cats[i]; return null; }
+  function tcls(type){ return type === 'rev' ? ' rev' : type === 'ep' ? ' ep' : ''; }
+  function pot(id){ for (var i = 0; i < S.pots.length; i++) if (S.pots[i].id === id) return S.pots[i]; return null; }
+  function potAdd(id, d){ var p = id ? pot(id) : null; if (p) p.bal = r2(p.bal + d); }
+  function simpleRow(c, st){
+    var real = r2(st.by[c.id] || 0), p = c.type === 'ep' ? pot(c.pot) : null;
+    return '<button class="row" data-act="add" data-cat="' + c.id + '"><div class="dot' + tcls(c.type) + '">' + esc(c.name.charAt(0).toUpperCase()) + '</div><div class="g"><div class="t">' + esc(c.name) +
+      '</div>' + (c.plan || p ? '<div class="s num">' + (c.plan ? 'Prévu ' + fmt(c.plan) : '') + (c.plan && p ? ' · ' : '') + (p ? 'vers ' + esc(p.name) : '') + '</div>' : '') + '</div><div class="a num">' + fmt(real) + '</div></button>';
+  }
   function cname(t){ var c = cat(t.cat); return c ? c.name : 'Catégorie supprimée'; }
   function mLabel(m, short){ return new Date(+m.slice(0, 4), +m.slice(5, 7) - 1, 1).toLocaleDateString('fr-FR', short ? { month: 'short' } : { month: 'long', year: 'numeric' }); }
   function dLabel(d){ return new Date(d + 'T12:00:00').toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' }); }
@@ -119,7 +129,7 @@ if (typeof document !== 'undefined') (function(){
         va = S.cats.filter(function(c){ return c.type === 'dep' && !c.fixed; }),
         rv = S.cats.filter(function(c){ return c.type === 'rev'; });
     if (fx.length){
-      h += '<h2>Charges fixes<small>' + (st.resteFixe > 0 ? 'reste ' + fmt(st.resteFixe) : 'tout est payé') + '</small></h2><div class="list">' + fx.map(function(c){ return fixedRow(c, st); }).join('') + '</div>';
+      h += '<h2>Charges fixes<small>' + (st.resteFixe > 0 ? 'reste ' + fmt(st.resteFixe) : fx.every(function(c){ return st.n[c.id]; }) ? 'tout est payé' : '') + '</small></h2><div class="list">' + fx.map(function(c){ return fixedRow(c, st); }).join('') + '</div>';
     }
     if (va.length){
       h += '<h2>Budgets</h2><div class="list">' + va.map(function(c){
@@ -130,25 +140,24 @@ if (typeof document !== 'undefined') (function(){
             (left < 0 ? '<span class="neg">Dépassé de ' + fmt(-left) + '</span>' : 'Reste ' + fmt(left)) + '</div>' : '') + '</div></button>';
       }).join('') + '</div>';
     }
+    var epc = S.cats.filter(function(c){ return c.type === 'ep'; });
+    if (epc.length){
+      h += '<h2>Épargne<small class="num">' + (st.ep > 0 ? fmt(st.ep) + ' placés' : '') + '</small></h2><div class="list">' + epc.map(function(c){ return c.fixed ? fixedRow(c, st) : simpleRow(c, st); }).join('') + '</div>';
+    }
     if (rv.length){
-      h += '<h2>Revenus</h2><div class="list">' + rv.map(function(c){
-        if (c.fixed) return fixedRow(c, st);
-        var real = r2(st.by[c.id] || 0);
-        return '<button class="row" data-act="add" data-cat="' + c.id + '"><div class="dot rev">' + esc(c.name.charAt(0).toUpperCase()) + '</div><div class="g"><div class="t">' + esc(c.name) +
-          '</div>' + (c.plan ? '<div class="s num">Prévu ' + fmt(c.plan) + '</div>' : '') + '</div><div class="a num">' + fmt(real) + '</div></button>';
-      }).join('') + '</div>';
+      h += '<h2>Revenus</h2><div class="list">' + rv.map(function(c){ return c.fixed ? fixedRow(c, st) : simpleRow(c, st); }).join('') + '</div>';
     }
     return h;
   }
   function fixedRow(c, st){
-    var done = !!st.n[c.id], real = r2(st.by[c.id] || 0), rev = c.type === 'rev' ? ' rev' : '';
+    var done = !!st.n[c.id], real = r2(st.by[c.id] || 0), rev = tcls(c.type), pp = c.type === 'ep' ? pot(c.pot) : null;
     var last = done ? txM(S, UI.month).filter(function(t){ return t.cat === c.id; }).sort(function(a, b){ return a.date < b.date ? 1 : -1; })[0] : null;
     return '<div class="row"><button class="dot' + rev + (done ? ' done' : '') + '" data-act="' + (done ? 'edit' : 'add') + '" data-id="' + (last ? last.id : '') + '" data-cat="' + c.id + '" aria-label="' + esc(c.name) + '">' +
       (done ? CH.ok : esc(c.name.charAt(0).toUpperCase())) + '</button>' +
       '<button class="g" style="text-align:left" data-act="' + (done ? 'edit' : 'add') + '" data-id="' + (last ? last.id : '') + '" data-cat="' + c.id + '"><div class="t">' + esc(c.name) + '</div><div class="s num">' +
-      (done ? (c.type === 'rev' ? 'Reçu le ' : 'Payé le ') + dShort(last.date) : 'Prévu ' + fmt(c.plan)) + '</div></button>' +
+      (done ? (c.type === 'rev' ? 'Reçu le ' : c.type === 'ep' ? 'Versé le ' : 'Payé le ') + dShort(last.date) : 'Prévu ' + fmt(c.plan)) + (pp ? ' · vers ' + esc(pp.name) : '') + '</div></button>' +
       (done ? '<div class="a num">' + fmt(real) + '</div>'
-            : '<button class="pill' + rev + '" data-act="quick" data-cat="' + c.id + '">' + (c.type === 'rev' ? 'Encaisser' : 'Payer') + '</button>') + '</div>';
+            : '<button class="pill' + rev + '" data-act="quick" data-cat="' + c.id + '">' + (c.type === 'rev' ? 'Encaisser' : c.type === 'ep' ? 'Verser' : 'Payer') + '</button>') + '</div>';
   }
 
   /* --- écran Opérations --- */
@@ -157,9 +166,9 @@ if (typeof document !== 'undefined') (function(){
     if (!tx.length) return h + '<div class="card empty">Aucune opération ce mois-ci.<br>Touche le bouton + pour en ajouter une.</div>';
     tx.forEach(function(t, i){
       if (t.date !== day){ if (day) h += '</div>'; day = t.date; h += '<div class="day">' + esc(dLabel(day)) + '</div><div class="list">'; }
-      var rev = t.type === 'rev';
-      h += '<button class="row" data-act="edit" data-id="' + t.id + '"><div class="dot' + (rev ? ' rev' : '') + '">' + esc(cname(t).charAt(0).toUpperCase()) + '</div><div class="g"><div class="t">' +
-        esc(t.note || cname(t)) + '</div>' + (t.note ? '<div class="s">' + esc(cname(t)) + '</div>' : '') + '</div><div class="a num ' + (rev ? 'pos' : '') + '">' + (rev ? '+' : '−') + fmt(t.amt) + '</div></button>';
+      var rev = t.type === 'rev', tp = t.type === 'ep' ? pot(t.pot) : null;
+      h += '<button class="row" data-act="edit" data-id="' + t.id + '"><div class="dot' + tcls(t.type) + '">' + esc(cname(t).charAt(0).toUpperCase()) + '</div><div class="g"><div class="t">' +
+        esc(t.note || cname(t)) + '</div>' + (t.note || tp ? '<div class="s">' + esc(t.note ? cname(t) : '') + (t.note && tp ? ' · ' : '') + (tp ? 'vers ' + esc(tp.name) : '') + '</div>' : '') + '</div><div class="a num ' + (rev ? 'pos' : t.type === 'ep' ? 'amb' : '') + '">' + (rev ? '+' : '−') + fmt(t.amt) + '</div></button>';
     });
     return h + '</div>';
   }
@@ -176,11 +185,11 @@ if (typeof document !== 'undefined') (function(){
       return '<div class="c' + (x.m === NOW ? ' cur' : '') + '"><div class="bars"><i class="r" style="height:' + Math.round(x.s.rev / max * 100) + '%"></i><i class="d" style="height:' + Math.round(x.s.dep / max * 100) + '%"></i></div><span>' + esc(mLabel(x.m, true)) + '</span></div>';
     }).join('') + '</div><div class="leg"><span><i style="background:var(--blue)"></i>Revenus</span><span><i style="background:var(--acc)"></i>Dépenses</span></div></div>';
     h += '<h2>Épargné par mois<small class="num">' + (tot > 0 ? '+' : '') + fmt(tot) + ' sur 6 mois</small></h2><div class="list">' + ms.slice().reverse().map(function(x){
-      return '<button class="row" data-act="m-go" data-m="' + x.m + '"><div class="g"><div class="t" style="text-transform:capitalize">' + esc(mLabel(x.m)) + '</div><div class="s num">' + fmt(x.s.rev) + ' reçus · ' + fmt(x.s.dep) + ' dépensés</div></div><div class="a num ' + (x.s.saved < 0 ? 'neg' : 'pos') + '">' + (x.s.saved > 0 ? '+' : '') + fmt(x.s.saved) + '</div></button>';
+      return '<button class="row" data-act="m-go" data-m="' + x.m + '"><div class="g"><div class="t" style="text-transform:capitalize">' + esc(mLabel(x.m)) + '</div><div class="s num">' + fmt(x.s.rev) + ' reçus · ' + fmt(x.s.dep) + ' dépensés' + (x.s.ep > 0 ? ' · ' + fmt(x.s.ep) + ' placés' : '') + '</div></div><div class="a num ' + (x.s.saved < 0 ? 'neg' : 'pos') + '">' + (x.s.saved > 0 ? '+' : '') + fmt(x.s.saved) + '</div></button>';
     }).join('') + '</div>';
     h += '<h2>Épargne placée</h2><div class="list">' + S.pots.map(function(p){
       return '<button class="row" data-act="pot" data-id="' + p.id + '"><div class="dot">' + esc(p.name.charAt(0).toUpperCase()) + '</div><div class="g"><div class="t">' + esc(p.name) + '</div><div class="s">Touche pour mettre à jour</div></div><div class="a num">' + fmt(p.bal) + '</div></button>';
-    }).join('') + '<button class="row" data-act="pot"><div class="dot">+</div><div class="g"><div class="t">Ajouter un livret</div><div class="s">LDDS, Livret A, PEA…</div></div></button></div>';
+    }).join('') + '<button class="row" data-act="pot"><div class="dot">+</div><div class="g"><div class="t">Ajouter un placement</div><div class="s">LDDS, Livret A, PEA…</div></div></button></div>';
     return h;
   }
 
@@ -189,10 +198,10 @@ if (typeof document !== 'undefined') (function(){
     var h = '<div class="top"><div class="month"><h1 style="text-align:left;min-width:0;padding-left:4px">Réglages</h1></div></div>';
     var grp = function(type, title){
       return '<h2>' + title + '</h2><div class="list">' + S.cats.filter(function(c){ return c.type === type; }).map(function(c){
-        return '<button class="row" data-act="cat" data-id="' + c.id + '"><div class="g"><div class="t">' + esc(c.name) + '</div><div class="s">' + (c.fixed ? 'Fixe, chaque mois' : 'Variable') + '</div></div><div class="a num">' + fmt(c.plan) + '</div></button>';
-      }).join('') + '<button class="row" data-act="cat" data-type="' + type + '"><div class="dot' + (type === 'rev' ? ' rev' : '') + '">+</div><div class="g"><div class="t">Ajouter une catégorie</div></div></button></div>';
+        return '<button class="row" data-act="cat" data-id="' + c.id + '"><div class="g"><div class="t">' + esc(c.name) + '</div><div class="s">' + (c.fixed ? 'Fixe, chaque mois' : 'Variable') + (type === 'ep' && pot(c.pot) ? ' · vers ' + esc(pot(c.pot).name) : '') + '</div></div><div class="a num">' + fmt(c.plan) + '</div></button>';
+      }).join('') + '<button class="row" data-act="cat" data-type="' + type + '"><div class="dot' + tcls(type) + '">+</div><div class="g"><div class="t">Ajouter une catégorie</div></div></button></div>';
     };
-    h += grp('dep', 'Dépenses prévues') + grp('rev', 'Revenus prévus');
+    h += grp('dep', 'Dépenses prévues') + grp('ep', 'Épargne prévue') + grp('rev', 'Revenus prévus');
     h += '<h2>Compte</h2><div class="list"><button class="row" data-act="solde"><div class="g"><div class="t">Recaler le solde</div><div class="s">Si l’appli ne correspond plus à ta banque</div></div><div class="a num">' + fmt(stats(S, NOW).bal) + '</div></button></div>';
     h += '<h2>Sauvegarde</h2><div class="card"><p class="hint">Tes données restent uniquement sur ce téléphone. Exporte-les de temps en temps pour ne rien perdre.<br>Dernier export : ' +
       (S.lastExport ? new Date(S.lastExport).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' }) : 'jamais') + '</p><div class="btns"><button class="btn" data-act="export">Exporter</button><button class="btn ghost" data-act="import">Importer</button></div></div>';
@@ -217,28 +226,34 @@ if (typeof document !== 'undefined') (function(){
   function openSheet(){ renderSheet(); $('#sheet').classList.add('on'); $('#veil').classList.add('on'); }
   function closeSheet(){ UI.form = null; $('#sheet').classList.remove('on'); $('#veil').classList.remove('on'); if (document.activeElement) document.activeElement.blur(); }
   function head(t){ return '<div class="grip"></div><div class="sh"><h3>' + t + '</h3><button class="ib" data-act="close" aria-label="Fermer">' + CH.x + '</button></div>'; }
+  function seg(f){
+    return '<div class="seg">' + [['dep', 'Dépense'], ['rev', 'Revenu'], ['ep', 'Épargne']].map(function(o){
+      return '<button data-act="f-type" data-v="' + o[0] + '" class="' + (f.type === o[0] ? 'on' : '') + '">' + o[1] + '</button>'; }).join('') + '</div>';
+  }
   function renderSheet(){
     var f = UI.form, h = '';
     if (f.kind === 'tx'){
       var cs = S.cats.filter(function(c){ return c.type === f.type; });
-      h = head(f.id ? 'Modifier' : 'Nouvelle opération') +
-        '<div class="seg"><button data-act="f-type" data-v="dep" class="' + (f.type === 'dep' ? 'on' : '') + '">Dépense</button><button data-act="f-type" data-v="rev" class="' + (f.type === 'rev' ? 'on' : '') + '">Revenu</button></div>' +
+      h = head(f.id ? 'Modifier' : 'Nouvelle opération') + seg(f) +
         '<div class="amt"><input id="f-amt" inputmode="decimal" placeholder="0,00" autocomplete="off" value="' + esc(f.amt) + '"><span>€</span></div>' +
-        '<div class="chips">' + cs.map(function(c){ return '<button class="chip' + (f.cat === c.id ? ' on' + (f.type === 'rev' ? ' rev' : '') : '') + '" data-act="f-cat" data-v="' + c.id + '">' + esc(c.name) + '</button>'; }).join('') + '</div>' +
+        (cs.length ? '<div class="chips">' + cs.map(function(c){ return '<button class="chip' + (f.cat === c.id ? ' on' + tcls(f.type) : '') + '" data-act="f-cat" data-v="' + c.id + '">' + esc(c.name) + '</button>'; }).join('') + '</div>'
+                   : '<p class="hint">Aucune catégorie de ce type. Crée-la d’abord dans Réglages.</p>') +
         '<div class="two"><div><label class="f" for="f-date">Date</label><input class="in" type="date" id="f-date" value="' + esc(f.date) + '"></div>' +
         '<div><label class="f" for="f-note">Note (facultatif)</label><input class="in" id="f-note" maxlength="60" autocomplete="off" value="' + esc(f.note) + '"></div></div>' +
         '<div class="err" id="f-err"></div><button class="btn" data-act="f-save">Enregistrer</button>' + (f.id ? '<button class="btn danger" style="margin-top:10px" data-act="f-del">Supprimer</button>' : '');
     } else if (f.kind === 'cat'){
-      h = head(f.id ? 'Catégorie' : 'Nouvelle catégorie') +
-        '<div class="seg"><button data-act="f-type" data-v="dep" class="' + (f.type === 'dep' ? 'on' : '') + '">Dépense</button><button data-act="f-type" data-v="rev" class="' + (f.type === 'rev' ? 'on' : '') + '">Revenu</button></div>' +
+      h = head(f.id ? 'Catégorie' : 'Nouvelle catégorie') + (f.id ? '' : seg(f)) +
         '<label class="f" for="f-name">Nom</label><input class="in" id="f-name" maxlength="30" autocomplete="off" value="' + esc(f.name) + '">' +
         '<label class="f" for="f-amt">Montant prévu par mois (€)</label><input class="in" id="f-amt" inputmode="decimal" placeholder="0,00" autocomplete="off" value="' + esc(f.amt) + '">' +
+        (f.type === 'ep' ? '<label class="f" for="f-pot">Placement qui reçoit les versements</label>' + (S.pots.length
+            ? '<select class="in" id="f-pot">' + S.pots.map(function(p){ return '<option value="' + p.id + '"' + (f.pot === p.id ? ' selected' : '') + '>' + esc(p.name) + '</option>'; }).join('') + '</select>'
+            : '<p class="hint">Aucun placement pour l’instant. Ajoute-le d’abord dans l’onglet Bilan (PEA, LDDS…).</p>') : '') +
         '<label class="chk"><input type="checkbox" id="f-fixed"' + (f.fixed ? ' checked' : '') + '>Montant fixe, une fois par mois</label>' +
         '<p class="hint">Fixe : loyer, abonnement, salaire — à cocher d’un geste chaque mois. Variable : un budget à ne pas dépasser.</p>' +
         '<div class="err" id="f-err"></div><button class="btn" data-act="f-save">Enregistrer</button>' + (f.id ? '<button class="btn danger" style="margin-top:10px" data-act="f-del">Supprimer la catégorie</button>' : '');
     } else if (f.kind === 'pot'){
-      h = head(f.id ? 'Livret' : 'Nouveau livret') + '<label class="f" for="f-name">Nom</label><input class="in" id="f-name" maxlength="30" autocomplete="off" value="' + esc(f.name) + '">' +
-        '<label class="f" for="f-amt">Solde actuel (€)</label><input class="in" id="f-amt" inputmode="decimal" placeholder="0,00" autocomplete="off" value="' + esc(f.amt) + '">' +
+      h = head(f.id ? 'Placement' : 'Nouveau placement') + '<label class="f" for="f-name">Nom</label><input class="in" id="f-name" maxlength="30" autocomplete="off" value="' + esc(f.name) + '">' +
+        '<label class="f" for="f-amt">Valeur actuelle (€)</label><input class="in" id="f-amt" inputmode="decimal" placeholder="0,00" autocomplete="off" value="' + esc(f.amt) + '">' +
         '<div class="err" id="f-err"></div><button class="btn" data-act="f-save">Enregistrer</button>' + (f.id ? '<button class="btn danger" style="margin-top:10px" data-act="f-del">Supprimer</button>' : '');
     } else if (f.kind === 'solde'){
       h = head('Recaler le solde') + '<p class="hint">Indique le solde réel de ton compte courant aujourd’hui. Tes opérations ne sont pas modifiées.</p>' +
@@ -251,6 +266,7 @@ if (typeof document !== 'undefined') (function(){
     if (!f) return;
     ['amt', 'date', 'note', 'name'].forEach(function(k){ var v = g('f-' + k); if (v !== undefined) f[k] = v; });
     var fx = $('#f-fixed'); if (fx) f.fixed = fx.checked;
+    var fp = $('#f-pot'); if (fp) f.pot = fp.value;
   }
   function fail(msg){ var e = $('#f-err'); if (e) e.textContent = msg; }
 
@@ -262,21 +278,25 @@ if (typeof document !== 'undefined') (function(){
       if (!/^\d{4}-\d{2}-\d{2}$/.test(f.date)) return fail('Choisis une date.');
       var t = f.id ? S.tx.filter(function(x){ return x.id === f.id; })[0] : null;
       if (!t){ t = { id: uid() }; S.tx.push(t); }
+      else if (t.type === 'ep') potAdd(t.pot, -t.amt);
       t.date = f.date; t.amt = a; t.type = f.type; t.cat = f.cat; t.note = (f.note || '').trim();
+      t.pot = f.type === 'ep' ? (cat(f.cat).pot || '') : '';
+      if (t.type === 'ep') potAdd(t.pot, a);
       UI.month = f.date.slice(0, 7) > addM(NOW, 1) ? UI.month : f.date.slice(0, 7);
       toast(f.id ? 'Opération modifiée' : 'Opération ajoutée');
     } else if (f.kind === 'cat'){
       var name = (f.name || '').trim();
       if (!name) return fail('Donne un nom à la catégorie.');
       if (f.amt !== '' && !(a >= 0)) return fail('Montant prévu invalide.');
+      if (f.type === 'ep' && !pot(f.pot)) return fail('Choisis le placement qui reçoit les versements.');
       var c = f.id ? cat(f.id) : null;
       if (!c){ c = { id: uid() }; S.cats.push(c); }
-      if (c.type && c.type !== f.type) S.tx.forEach(function(x){ if (x.cat === c.id) x.type = f.type; });
       c.name = name; c.type = f.type; c.plan = a >= 0 ? a : 0; c.fixed = !!f.fixed;
+      if (f.type === 'ep') c.pot = f.pot;
     } else if (f.kind === 'pot'){
       var pn = (f.name || '').trim();
-      if (!pn) return fail('Donne un nom au livret.');
-      if (!(a >= 0)) return fail('Indique le solde du livret.');
+      if (!pn) return fail('Donne un nom au placement.');
+      if (!(a >= 0)) return fail('Indique la valeur du placement.');
       var p = f.id ? S.pots.filter(function(x){ return x.id === f.id; })[0] : null;
       if (!p){ p = { id: uid() }; S.pots.push(p); }
       p.name = pn; p.bal = a;
@@ -290,7 +310,7 @@ if (typeof document !== 'undefined') (function(){
   }
   function delForm(){
     var f = UI.form;
-    if (f.kind === 'tx') S.tx = S.tx.filter(function(x){ return x.id !== f.id; });
+    if (f.kind === 'tx'){ S.tx.forEach(function(x){ if (x.id === f.id && x.type === 'ep') potAdd(x.pot, -x.amt); }); S.tx = S.tx.filter(function(x){ return x.id !== f.id; }); }
     else if (f.kind === 'pot') S.pots = S.pots.filter(function(x){ return x.id !== f.id; });
     else if (f.kind === 'cat'){
       var n = S.tx.filter(function(x){ return x.cat === f.id; }).length;
@@ -340,12 +360,14 @@ if (typeof document !== 'undefined') (function(){
     else if (act === 'quick'){
       var q = cat(d.cat); if (!q) return;
       if (!(q.plan > 0)){ UI.form = { kind: 'tx', type: q.type, cat: q.id, amt: '', date: defDate(), note: '' }; return openSheet(); }
-      S.tx.push({ id: uid(), date: defDate(), amt: q.plan, type: q.type, cat: q.id, note: '' }); save(); render();
-      toast(q.name + (q.type === 'rev' ? ' : reçu' : ' : payé'));
+      S.tx.push({ id: uid(), date: defDate(), amt: q.plan, type: q.type, cat: q.id, note: '', pot: q.type === 'ep' ? (q.pot || '') : '' });
+      if (q.type === 'ep') potAdd(q.pot, q.plan);
+      save(); render();
+      toast(q.name + (q.type === 'rev' ? ' : reçu' : q.type === 'ep' ? ' : versé' : ' : payé'));
     }
     else if (act === 'cat'){
       var k = d.id ? cat(d.id) : null;
-      UI.form = k ? { kind: 'cat', id: k.id, type: k.type, name: k.name, amt: plain(k.plan), fixed: k.fixed } : { kind: 'cat', type: d.type || 'dep', name: '', amt: '', fixed: false };
+      UI.form = k ? { kind: 'cat', id: k.id, type: k.type, name: k.name, amt: plain(k.plan), fixed: k.fixed, pot: k.pot || '' } : { kind: 'cat', type: d.type || 'dep', name: '', amt: '', fixed: d.type === 'ep', pot: S.pots[0] ? S.pots[0].id : '' };
       openSheet();
     }
     else if (act === 'pot'){
@@ -353,7 +375,7 @@ if (typeof document !== 'undefined') (function(){
       UI.form = p ? { kind: 'pot', id: p.id, name: p.name, amt: plain(p.bal) || '0' } : { kind: 'pot', name: '', amt: '' }; openSheet();
     }
     else if (act === 'solde'){ UI.form = { kind: 'solde', amt: '' }; openSheet(); }
-    else if (act === 'f-type'){ grab(); if (UI.form.type !== d.v){ UI.form.type = d.v; if (UI.form.kind === 'tx') UI.form.cat = ''; } renderSheet(); }
+    else if (act === 'f-type'){ grab(); if (UI.form.type !== d.v){ UI.form.type = d.v; if (UI.form.kind === 'tx') UI.form.cat = ''; else if (d.v === 'ep' && !pot(UI.form.pot)) UI.form.pot = S.pots[0] ? S.pots[0].id : ''; } renderSheet(); }
     else if (act === 'f-cat'){ grab(); UI.form.cat = d.v; renderSheet(); }
     else if (act === 'f-save') saveForm();
     else if (act === 'f-del') delForm();
