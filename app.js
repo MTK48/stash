@@ -1,6 +1,6 @@
 'use strict';
 /* Stash — budget mensuel. Données stockées uniquement sur l'appareil (localStorage). */
-var KEY = 'stash.v1', VERSION = '1.1';
+var KEY = 'stash.v1', VERSION = '1.2';
 
 /* ---------- calculs (purs) ---------- */
 function r2(n){ return Math.round((n + Number.EPSILON) * 100) / 100; }
@@ -13,21 +13,49 @@ function pad(n){ return (n < 10 ? '0' : '') + n; }
 function iso(d){ return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
 function mkey(d){ return iso(d).slice(0, 7); }
 function addM(m, k){ return mkey(new Date(+m.slice(0, 4), +m.slice(5, 7) - 1 + k, 1)); }
+var MINP = 15; // écart minimal, en jours, entre deux débuts de mois déclenchés par un revenu
 function sgn(t){ return t.type === 'rev' ? t.amt : -t.amt; }
-function txM(S, m){ return S.tx.filter(function(t){ return t.date.slice(0, 7) === m; }); }
-function startBal(S, m){
+function dayAdd(d, k){ return iso(new Date(+d.slice(0, 4), +d.slice(5, 7) - 1, +d.slice(8, 10) + k)); }
+function dayDiff(a, b){
+  var u = function(d){ return Date.UTC(+d.slice(0, 4), +d.slice(5, 7) - 1, +d.slice(8, 10)); };
+  return Math.round((u(b) - u(a)) / 864e5);
+}
+function inP(t, p){ return t.date >= p.start && (!p.end || t.date < p.end); }
+function txP(S, p){ return S.tx.filter(function(t){ return inP(t, p); }); }
+function balAt(S, d){ // solde du compte au début du jour d
   var a = S.anchor; if (!a) return 0;
   var s = a.amount;
   S.tx.forEach(function(t){
-    var k = t.date.slice(0, 7);
-    if (m > a.month){ if (k >= a.month && k < m) s += sgn(t); }
-    else if (m < a.month){ if (k >= m && k < a.month) s -= sgn(t); }
+    if (d > a.date){ if (t.date >= a.date && t.date < d) s += sgn(t); }
+    else if (d < a.date){ if (t.date >= d && t.date < a.date) s -= sgn(t); }
   });
   return r2(s);
 }
-function stats(S, m){
+function opener(S){ return S.cats.filter(function(c){ return c.type === 'rev' && c.opens; })[0] || null; }
+/* Les « mois » de l'appli. Sans revenu déclencheur : mois calendaires. Avec : un mois démarre à chaque encaissement de ce revenu. */
+function periods(S, today){
+  var op = opener(S), out = [], first = S.anchor ? S.anchor.date : today, i;
+  S.tx.forEach(function(t){ if (t.date < first) first = t.date; });
+  if (op){
+    var b = [first], last = null;
+    S.tx.filter(function(t){ return t.cat === op.id; }).map(function(t){ return t.date; }).sort().forEach(function(d){
+      if (last && dayDiff(last, d) < MINP) return;
+      last = d; if (d > first) b.push(d);
+    });
+    for (i = 0; i < b.length; i++) out.push({ start: b[i], end: b[i + 1] || null });
+  } else {
+    var m = first.slice(0, 7), endM = addM(today.slice(0, 7), 1);
+    for (; m <= endM; m = addM(m, 1)) out.push({ start: m + '-01', end: addM(m, 1) + '-01', cal: true });
+  }
+  return out;
+}
+function curIndex(ps, today){
+  for (var i = ps.length - 1; i >= 0; i--) if (ps[i].start <= today && (!ps[i].end || today < ps[i].end)) return i;
+  return today < ps[0].start ? 0 : ps.length - 1;
+}
+function stats(S, p){
   var dep = 0, rev = 0, ep = 0, by = {}, n = {};
-  txM(S, m).forEach(function(t){
+  txP(S, p).forEach(function(t){
     if (t.type === 'rev') rev += t.amt; else if (t.type === 'ep') ep += t.amt; else dep += t.amt;
     by[t.cat] = (by[t.cat] || 0) + t.amt; n[t.cat] = (n[t.cat] || 0) + 1;
   });
@@ -39,17 +67,17 @@ function stats(S, m){
     else if (c.type === 'ep'){ pEp += c.plan; resteEp += reste; }
     else { pDep += c.plan; resteDep += reste; if (c.fixed) resteFixe += reste; }
   });
-  var start = startBal(S, m);
+  var start = balAt(S, p.start);
   return { dep: r2(dep), rev: r2(rev), by: by, n: n, pDep: r2(pDep), pRev: r2(pRev), start: start,
     ep: r2(ep), pEp: r2(pEp), resteEp: r2(resteEp),
     saved: r2(rev - dep), bal: r2(start + rev - dep - ep), resteDep: r2(resteDep), resteRev: r2(resteRev),
     resteFixe: r2(resteFixe), proj: r2(start + rev - dep - ep - resteDep - resteEp + resteRev) };
 }
 function defaults(){
-  var i = 0, c = function(name, type, fixed){ return { id: 'c' + (++i), name: name, type: type, plan: 0, fixed: !!fixed }; };
+  var i = 0, c = function(name, type, fixed, opens){ return { id: 'c' + (++i), name: name, type: type, plan: 0, fixed: !!fixed, opens: !!opens }; };
   return { app: 'stash', v: 1, anchor: null, tx: [], pots: [],
     cats: [c('Alimentation', 'dep'), c('Logement', 'dep', 1), c('Transports', 'dep'), c('Abonnements', 'dep', 1),
-           c('Loisirs', 'dep'), c('Autres dépenses', 'dep'), c('Salaire', 'rev', 1), c('Autres revenus', 'rev')] };
+           c('Loisirs', 'dep'), c('Autres dépenses', 'dep'), c('Salaire', 'rev', 1, 1), c('Autres revenus', 'rev')] };
 }
 function validState(o){
   return !!o && o.app === 'stash' && Array.isArray(o.cats) && Array.isArray(o.tx) &&
@@ -57,21 +85,28 @@ function validState(o){
     o.tx.every(function(t){ return t && /^\d{4}-\d{2}-\d{2}$/.test(t.date) && isFinite(t.amt); });
 }
 function normalize(o){
-  o.cats.forEach(function(c){ c.plan = r2(+c.plan || 0); c.fixed = !!c.fixed; });
+  o.cats.forEach(function(c){ c.plan = r2(+c.plan || 0); c.fixed = !!c.fixed; c.opens = !!c.opens && c.type === 'rev'; });
   o.tx.forEach(function(t){ t.amt = r2(+t.amt); if (!t.id) t.id = uid(); if (t.type !== 'rev' && t.type !== 'ep') t.type = 'dep'; });
   if (!Array.isArray(o.pots)) o.pots = [];
   o.pots.forEach(function(p){ p.bal = r2(+p.bal || 0); if (!p.id) p.id = uid(); });
-  if (!o.anchor || !isFinite(o.anchor.amount) || !/^\d{4}-\d{2}$/.test(o.anchor.month)) o.anchor = null;
+  if (o.anchor && !o.anchor.date && /^\d{4}-\d{2}$/.test(o.anchor.month || '')) o.anchor = { date: o.anchor.month + '-01', amount: o.anchor.amount };
+  if (!o.anchor || !isFinite(o.anchor.amount) || !/^\d{4}-\d{2}-\d{2}$/.test(o.anchor.date || '')) o.anchor = null;
   return o;
 }
 function uid(){ return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
 
-if (typeof module !== 'undefined') module.exports = { r2: r2, parseAmt: parseAmt, addM: addM, startBal: startBal, stats: stats, defaults: defaults, validState: validState, normalize: normalize, mkey: mkey };
+if (typeof module !== 'undefined') module.exports = { r2: r2, parseAmt: parseAmt, addM: addM, balAt: balAt, periods: periods, curIndex: curIndex, dayAdd: dayAdd, dayDiff: dayDiff, stats: stats, defaults: defaults, validState: validState, normalize: normalize, mkey: mkey };
 
 /* ---------- interface ---------- */
 if (typeof document !== 'undefined') (function(){
-  var S = load(), NOW = mkey(new Date());
-  var UI = { tab: 'mois', month: NOW, form: null }, installEvt = null;
+  var S = load(), TODAY = iso(new Date()), PS = [], CI = 0;
+  var UI = { tab: 'mois', i: -1, form: null }, installEvt = null;
+  function sync(tx){ // recalcule les mois ; tx : se placer sur le mois qui contient cette opération
+    TODAY = iso(new Date()); PS = periods(S, TODAY); CI = curIndex(PS, TODAY);
+    if (tx){ for (var k = 0; k < PS.length; k++) if (inP(tx, PS[k])) UI.i = k; }
+    if (UI.i < 0 || UI.i >= PS.length) UI.i = CI;
+  }
+  function P(){ return PS[UI.i]; }
   var $ = function(q){ return document.querySelector(q); };
   var EUR = new Intl.NumberFormat('fr-FR', { style: 'currency', currency: 'EUR' });
   function fmt(n){ return EUR.format(n); }
@@ -94,8 +129,10 @@ if (typeof document !== 'undefined') (function(){
   function cname(t){ var c = cat(t.cat); return c ? c.name : 'Catégorie supprimée'; }
   function mLabel(m, short){ return new Date(+m.slice(0, 4), +m.slice(5, 7) - 1, 1).toLocaleDateString('fr-FR', short ? { month: 'short' } : { month: 'long', year: 'numeric' }); }
   function dLabel(d){ return new Date(d + 'T12:00:00').toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' }); }
-  function dShort(d){ return new Date(d + 'T12:00:00').toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' }); }
-  function defDate(){ return UI.month === NOW ? iso(new Date()) : UI.month + '-01'; }
+  function dShort(d){ return new Date(d + 'T12:00:00').toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' }).replace(/^1 /, '1er '); }
+  function defDate(){ return UI.i === CI ? TODAY : P().start; }
+  function pLabel(p, short){ return mLabel((p.cal ? p.start : dayAdd(p.start, 15)).slice(0, 7), short); }
+  function pSub(p){ return p.cal ? '' : (p.end ? 'du ' + dShort(p.start) + ' au ' + dShort(dayAdd(p.end, -1)) : 'depuis le ' + dShort(p.start)); }
   function toast(msg){ var t = $('#toast'); t.textContent = msg; t.classList.add('on'); clearTimeout(toast.t); toast.t = setTimeout(function(){ t.classList.remove('on'); }, 2200); }
   function pct(a, b){ return b > 0 ? Math.min(100, Math.round(a / b * 100)) : (a > 0 ? 100 : 0); }
   var CH = { l: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>',
@@ -104,19 +141,20 @@ if (typeof document !== 'undefined') (function(){
              ok: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>' };
 
   function top(){
-    return '<div class="top"><div class="month"><button class="ib" data-act="m-prev" aria-label="Mois précédent">' + CH.l + '</button><h1>' + esc(mLabel(UI.month)) +
-      '</h1><button class="ib" data-act="m-next" aria-label="Mois suivant"' + (UI.month >= addM(NOW, 1) ? ' disabled' : '') + '>' + CH.r + '</button></div>' +
-      (UI.month !== NOW ? '<button class="pill" data-act="m-now">Aujourd’hui</button>' : '') + '</div>';
+    var p = P(), sub = pSub(p);
+    return '<div class="top"><div class="month"><button class="ib" data-act="m-prev" aria-label="Mois précédent"' + (UI.i <= 0 ? ' disabled' : '') + '>' + CH.l + '</button><h1>' + esc(pLabel(p)) +
+      (sub ? '<small>' + esc(sub) + '</small>' : '') + '</h1><button class="ib" data-act="m-next" aria-label="Mois suivant"' + (UI.i >= PS.length - 1 ? ' disabled' : '') + '>' + CH.r + '</button></div>' +
+      (UI.i !== CI ? '<button class="pill" data-act="m-now">Aujourd’hui</button>' : '') + '</div>';
   }
 
   /* --- écran Mois --- */
   function vMois(){
-    var st = stats(S, UI.month), cur = UI.month === NOW, h = top();
-    h += '<div class="card hero"><div class="lbl">' + (cur ? 'Solde actuel' : UI.month < NOW ? 'Solde final' : 'Solde prévu') + '</div>' +
+    var st = stats(S, P()), cur = UI.i === CI, h = top();
+    h += '<div class="card hero"><div class="lbl">' + (cur ? 'Solde actuel' : UI.i < CI ? 'Solde final' : 'Solde prévu') + '</div>' +
       '<div class="big num' + (st.bal < 0 ? ' neg' : '') + '">' + fmt(st.bal) + '</div><div class="trio num">' +
       '<div><span>Départ</span><b>' + fmt(st.start) + '</b></div>' +
       '<div><span>Épargné ce mois</span><b class="' + (st.saved < 0 ? 'neg' : 'pos') + '">' + (st.saved > 0 ? '+' : '') + fmt(st.saved) + '</b></div>' +
-      (UI.month >= NOW ? '<div><span>Fin de mois estimée</span><b class="' + (st.proj < 0 ? 'neg' : '') + '">' + fmt(st.proj) + '</b></div>'
+      (UI.i >= CI ? '<div><span>Fin de mois estimée</span><b class="' + (st.proj < 0 ? 'neg' : '') + '">' + fmt(st.proj) + '</b></div>'
                        : '<div><span>Écart au budget</span><b class="' + (st.pDep - st.dep < 0 ? 'neg' : 'pos') + '">' + fmt(st.pDep - st.dep) + '</b></div>') +
       '</div></div>';
     var over = st.dep > st.pDep && st.pDep > 0;
@@ -151,18 +189,20 @@ if (typeof document !== 'undefined') (function(){
   }
   function fixedRow(c, st){
     var done = !!st.n[c.id], real = r2(st.by[c.id] || 0), rev = tcls(c.type), pp = c.type === 'ep' ? pot(c.pot) : null;
-    var last = done ? txM(S, UI.month).filter(function(t){ return t.cat === c.id; }).sort(function(a, b){ return a.date < b.date ? 1 : -1; })[0] : null;
+    var last = done ? txP(S, P()).filter(function(t){ return t.cat === c.id; }).sort(function(a, b){ return a.date < b.date ? 1 : -1; })[0] : null;
     return '<div class="row"><button class="dot' + rev + (done ? ' done' : '') + '" data-act="' + (done ? 'edit' : 'add') + '" data-id="' + (last ? last.id : '') + '" data-cat="' + c.id + '" aria-label="' + esc(c.name) + '">' +
       (done ? CH.ok : esc(c.name.charAt(0).toUpperCase())) + '</button>' +
       '<button class="g" style="text-align:left" data-act="' + (done ? 'edit' : 'add') + '" data-id="' + (last ? last.id : '') + '" data-cat="' + c.id + '"><div class="t">' + esc(c.name) + '</div><div class="s num">' +
       (done ? (c.type === 'rev' ? 'Reçu le ' : c.type === 'ep' ? 'Versé le ' : 'Payé le ') + dShort(last.date) : 'Prévu ' + fmt(c.plan)) + (pp ? ' · vers ' + esc(pp.name) : '') + '</div></button>' +
-      (done ? '<div class="a num">' + fmt(real) + '</div>'
-            : '<button class="pill' + rev + '" data-act="quick" data-cat="' + c.id + '">' + (c.type === 'rev' ? 'Encaisser' : c.type === 'ep' ? 'Verser' : 'Payer') + '</button>') + '</div>';
+      (done ? '<div class="a num">' + fmt(real) + '</div>' : '') +
+      // le revenu qui démarre le mois garde son bouton : l'encaisser de nouveau ouvre le mois suivant
+      (!done || (c.opens && UI.i === CI && dayDiff(P().start, TODAY) >= MINP)
+        ? '<button class="pill' + rev + '" data-act="quick" data-cat="' + c.id + '">' + (c.type === 'rev' ? 'Encaisser' : c.type === 'ep' ? 'Verser' : 'Payer') + '</button>' : '') + '</div>';
   }
 
   /* --- écran Opérations --- */
   function vOps(){
-    var tx = txM(S, UI.month).sort(function(a, b){ return a.date === b.date ? (a.id < b.id ? 1 : -1) : (a.date < b.date ? 1 : -1); }), h = top(), day = '';
+    var tx = txP(S, P()).sort(function(a, b){ return a.date === b.date ? (a.id < b.id ? 1 : -1) : (a.date < b.date ? 1 : -1); }), h = top(), day = '';
     if (!tx.length) return h + '<div class="card empty">Aucune opération ce mois-ci.<br>Touche le bouton + pour en ajouter une.</div>';
     tx.forEach(function(t, i){
       if (t.date !== day){ if (day) h += '</div>'; day = t.date; h += '<div class="day">' + esc(dLabel(day)) + '</div><div class="list">'; }
@@ -176,16 +216,16 @@ if (typeof document !== 'undefined') (function(){
   /* --- écran Bilan --- */
   function vBilan(){
     var ms = [], i, max = 1, tot = 0;
-    for (i = 5; i >= 0; i--){ var m = addM(NOW, -i), s = stats(S, m); ms.push({ m: m, s: s }); max = Math.max(max, s.dep, s.rev); tot += s.saved; }
-    var cur = stats(S, NOW), pots = S.pots.reduce(function(a, p){ return a + p.bal; }, 0);
+    for (i = Math.max(0, CI - 5); i <= CI; i++){ var s = stats(S, PS[i]); ms.push({ i: i, p: PS[i], s: s }); max = Math.max(max, s.dep, s.rev); tot += s.saved; }
+    var cur = stats(S, PS[CI]), pots = S.pots.reduce(function(a, p){ return a + p.bal; }, 0);
     var h = '<div class="top"><div class="month"><h1 style="text-align:left;min-width:0;padding-left:4px">Bilan</h1></div></div>';
     h += '<div class="card hero"><div class="lbl">Économies totales</div><div class="big num">' + fmt(cur.bal + pots) + '</div><div class="trio num" style="grid-template-columns:1fr 1fr">' +
       '<div><span>Compte courant</span><b>' + fmt(cur.bal) + '</b></div><div><span>Épargne placée</span><b>' + fmt(pots) + '</b></div></div></div>';
     h += '<div class="card"><div class="lbl">6 derniers mois</div><div class="chart">' + ms.map(function(x){
-      return '<div class="c' + (x.m === NOW ? ' cur' : '') + '"><div class="bars"><i class="r" style="height:' + Math.round(x.s.rev / max * 100) + '%"></i><i class="d" style="height:' + Math.round(x.s.dep / max * 100) + '%"></i></div><span>' + esc(mLabel(x.m, true)) + '</span></div>';
+      return '<div class="c' + (x.i === CI ? ' cur' : '') + '"><div class="bars"><i class="r" style="height:' + Math.round(x.s.rev / max * 100) + '%"></i><i class="d" style="height:' + Math.round(x.s.dep / max * 100) + '%"></i></div><span>' + esc(pLabel(x.p, true)) + '</span></div>';
     }).join('') + '</div><div class="leg"><span><i style="background:var(--blue)"></i>Revenus</span><span><i style="background:var(--acc)"></i>Dépenses</span></div></div>';
-    h += '<h2>Épargné par mois<small class="num">' + (tot > 0 ? '+' : '') + fmt(tot) + ' sur 6 mois</small></h2><div class="list">' + ms.slice().reverse().map(function(x){
-      return '<button class="row" data-act="m-go" data-m="' + x.m + '"><div class="g"><div class="t" style="text-transform:capitalize">' + esc(mLabel(x.m)) + '</div><div class="s num">' + fmt(x.s.rev) + ' reçus · ' + fmt(x.s.dep) + ' dépensés' + (x.s.ep > 0 ? ' · ' + fmt(x.s.ep) + ' placés' : '') + '</div></div><div class="a num ' + (x.s.saved < 0 ? 'neg' : 'pos') + '">' + (x.s.saved > 0 ? '+' : '') + fmt(x.s.saved) + '</div></button>';
+    h += '<h2>Épargné par mois<small class="num">' + (tot > 0 ? '+' : '') + fmt(tot) + ' sur ' + ms.length + ' mois</small></h2><div class="list">' + ms.slice().reverse().map(function(x){
+      return '<button class="row" data-act="m-go" data-i="' + x.i + '"><div class="g"><div class="t" style="text-transform:capitalize">' + esc(pLabel(x.p)) + '</div><div class="s num">' + fmt(x.s.rev) + ' reçus · ' + fmt(x.s.dep) + ' dépensés' + (x.s.ep > 0 ? ' · ' + fmt(x.s.ep) + ' placés' : '') + '</div></div><div class="a num ' + (x.s.saved < 0 ? 'neg' : 'pos') + '">' + (x.s.saved > 0 ? '+' : '') + fmt(x.s.saved) + '</div></button>';
     }).join('') + '</div>';
     h += '<h2>Épargne placée</h2><div class="list">' + S.pots.map(function(p){
       return '<button class="row" data-act="pot" data-id="' + p.id + '"><div class="dot">' + esc(p.name.charAt(0).toUpperCase()) + '</div><div class="g"><div class="t">' + esc(p.name) + '</div><div class="s">Touche pour mettre à jour</div></div><div class="a num">' + fmt(p.bal) + '</div></button>';
@@ -202,7 +242,10 @@ if (typeof document !== 'undefined') (function(){
       }).join('') + '<button class="row" data-act="cat" data-type="' + type + '"><div class="dot' + tcls(type) + '">+</div><div class="g"><div class="t">Ajouter une catégorie</div></div></button></div>';
     };
     h += grp('dep', 'Dépenses prévues') + grp('ep', 'Épargne prévue') + grp('rev', 'Revenus prévus');
-    h += '<h2>Compte</h2><div class="list"><button class="row" data-act="solde"><div class="g"><div class="t">Recaler le solde</div><div class="s">Si l’appli ne correspond plus à ta banque</div></div><div class="a num">' + fmt(stats(S, NOW).bal) + '</div></button></div>';
+    var op = opener(S);
+    h += '<h2>Début du mois</h2><div class="list"><button class="row" data-act="debut"><div class="g"><div class="t">' + (op ? 'À l’encaissement : ' + esc(op.name) : 'Le 1er de chaque mois') +
+      '</div><div class="s">' + (op ? 'Un nouveau mois démarre quand tu encaisses ce revenu' : 'Touche pour démarrer le mois à la paie') + '</div></div></button></div>';
+    h += '<h2>Compte</h2><div class="list"><button class="row" data-act="solde"><div class="g"><div class="t">Recaler le solde</div><div class="s">Si l’appli ne correspond plus à ta banque</div></div><div class="a num">' + fmt(stats(S, PS[CI]).bal) + '</div></button></div>';
     h += '<h2>Sauvegarde</h2><div class="card"><p class="hint">Tes données restent uniquement sur ce téléphone. Exporte-les de temps en temps pour ne rien perdre.<br>Dernier export : ' +
       (S.lastExport ? new Date(S.lastExport).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' }) : 'jamais') + '</p><div class="btns"><button class="btn" data-act="export">Exporter</button><button class="btn ghost" data-act="import">Importer</button></div></div>';
     if (installEvt) h += '<h2>Installation</h2><div class="card"><p class="hint">Ajoute Stash sur ton écran d’accueil, comme une vraie appli.</p><button class="btn" data-act="install">Installer l’appli</button></div>';
@@ -217,7 +260,7 @@ if (typeof document !== 'undefined') (function(){
   }
 
   function render(){
-    var w = !S.anchor; $('#nav').hidden = w;
+    var w = !S.anchor; $('#nav').hidden = w; sync();
     $('#app').innerHTML = w ? vWelcome() : UI.tab === 'ops' ? vOps() : UI.tab === 'bilan' ? vBilan() : UI.tab === 'regl' ? vRegl() : vMois();
     [].forEach.call(document.querySelectorAll('nav .tab'), function(b){ b.classList.toggle('on', b.dataset.tab === UI.tab); });
   }
@@ -259,6 +302,12 @@ if (typeof document !== 'undefined') (function(){
       h = head('Recaler le solde') + '<p class="hint">Indique le solde réel de ton compte courant aujourd’hui. Tes opérations ne sont pas modifiées.</p>' +
         '<div class="amt"><input id="f-amt" inputmode="decimal" placeholder="0,00" autocomplete="off" value="' + esc(f.amt) + '"><span>€</span></div><div class="err" id="f-err"></div><button class="btn" data-act="f-save">Enregistrer</button>';
     }
+    if (f.kind === 'debut'){
+      h = head('Début du mois') + '<p class="hint">Choisis ce qui démarre un nouveau mois. Avec un revenu, le mois commence le jour où tu l’encaisses, même si la date change d’un mois à l’autre.</p>' +
+        '<div class="chips"><button class="chip' + (!f.cat ? ' on' : '') + '" data-act="f-cat" data-v="">Le 1er du mois</button>' + S.cats.filter(function(c){ return c.type === 'rev'; }).map(function(c){
+          return '<button class="chip' + (f.cat === c.id ? ' on rev' : '') + '" data-act="f-cat" data-v="' + c.id + '">' + esc(c.name) + '</button>'; }).join('') + '</div>' +
+        '<p class="hint">Deux encaissements à moins de ' + MINP + ' jours d’écart ne démarrent qu’un seul mois.</p><div class="err" id="f-err"></div><button class="btn" data-act="f-save">Enregistrer</button>';
+    }
     $('#sheet').innerHTML = h;
   }
   function grab(){ // garde ce qui est tapé avant de redessiner le panneau
@@ -282,8 +331,8 @@ if (typeof document !== 'undefined') (function(){
       t.date = f.date; t.amt = a; t.type = f.type; t.cat = f.cat; t.note = (f.note || '').trim();
       t.pot = f.type === 'ep' ? (cat(f.cat).pot || '') : '';
       if (t.type === 'ep') potAdd(t.pot, a);
-      UI.month = f.date.slice(0, 7) > addM(NOW, 1) ? UI.month : f.date.slice(0, 7);
-      toast(f.id ? 'Opération modifiée' : 'Opération ajoutée');
+      var n0 = PS.length; sync({ date: f.date });
+      toast(PS.length > n0 && opener(S) ? 'Nouveau mois démarré' : f.id ? 'Opération modifiée' : 'Opération ajoutée');
     } else if (f.kind === 'cat'){
       var name = (f.name || '').trim();
       if (!name) return fail('Donne un nom à la catégorie.');
@@ -303,8 +352,10 @@ if (typeof document !== 'undefined') (function(){
     } else if (f.kind === 'solde'){
       if (isNaN(a)) return fail('Indique un montant.');
       // recalage : on décale le solde de référence pour que le solde du mois en cours soit exactement celui saisi
-      S.anchor.amount = r2(S.anchor.amount + (a - stats(S, NOW).bal));
+      S.anchor.amount = r2(S.anchor.amount + (a - stats(S, PS[CI]).bal));
       toast('Solde recalé');
+    } else if (f.kind === 'debut'){
+      S.cats.forEach(function(c){ c.opens = c.type === 'rev' && c.id === f.cat; }); UI.i = -1;
     }
     save(); closeSheet(); render();
   }
@@ -333,7 +384,7 @@ if (typeof document !== 'undefined') (function(){
       var o; try { o = JSON.parse(r.result); } catch (e) { o = null; }
       if (!validState(o)) return toast('Ce fichier n’est pas un fichier Stash');
       if (S.tx.length && !confirm('Remplacer toutes les données actuelles par celles du fichier (' + o.tx.length + ' opération' + (o.tx.length > 1 ? 's' : '') + ') ?')) return;
-      S = normalize(o); save(); UI.tab = 'mois'; UI.month = NOW; render();
+      S = normalize(o); save(); UI.tab = 'mois'; UI.i = -1; render();
       toast(S.anchor ? 'Données importées' : 'Catégories importées');
     };
     r.readAsText(file);
@@ -344,10 +395,10 @@ if (typeof document !== 'undefined') (function(){
     var b = ev.target.closest('[data-act],[data-tab]'); if (!b) return;
     var d = b.dataset, act = d.act;
     if (d.tab){ UI.tab = d.tab; render(); window.scrollTo(0, 0); return; }
-    if (act === 'm-prev'){ UI.month = addM(UI.month, -1); render(); }
-    else if (act === 'm-next'){ UI.month = addM(UI.month, 1); render(); }
-    else if (act === 'm-now'){ UI.month = NOW; render(); }
-    else if (act === 'm-go'){ UI.month = d.m; UI.tab = 'mois'; render(); window.scrollTo(0, 0); }
+    if (act === 'm-prev'){ if (UI.i > 0) UI.i--; render(); }
+    else if (act === 'm-next'){ if (UI.i < PS.length - 1) UI.i++; render(); }
+    else if (act === 'm-now'){ UI.i = CI; render(); }
+    else if (act === 'm-go'){ UI.i = +d.i; UI.tab = 'mois'; render(); window.scrollTo(0, 0); }
     else if (act === 'add'){
       var c = d.cat ? cat(d.cat) : null;
       UI.form = { kind: 'tx', type: c ? c.type : 'dep', cat: c ? c.id : '', amt: c && c.fixed ? plain(c.plan) : '', date: defDate(), note: '' };
@@ -360,10 +411,11 @@ if (typeof document !== 'undefined') (function(){
     else if (act === 'quick'){
       var q = cat(d.cat); if (!q) return;
       if (!(q.plan > 0)){ UI.form = { kind: 'tx', type: q.type, cat: q.id, amt: '', date: defDate(), note: '' }; return openSheet(); }
-      S.tx.push({ id: uid(), date: defDate(), amt: q.plan, type: q.type, cat: q.id, note: '', pot: q.type === 'ep' ? (q.pot || '') : '' });
+      var qd = defDate(), n0 = PS.length;
+      S.tx.push({ id: uid(), date: qd, amt: q.plan, type: q.type, cat: q.id, note: '', pot: q.type === 'ep' ? (q.pot || '') : '' });
       if (q.type === 'ep') potAdd(q.pot, q.plan);
-      save(); render();
-      toast(q.name + (q.type === 'rev' ? ' : reçu' : q.type === 'ep' ? ' : versé' : ' : payé'));
+      save(); sync({ date: qd }); render();
+      toast(PS.length > n0 && q.opens ? 'Nouveau mois démarré' : q.name + (q.type === 'rev' ? ' : reçu' : q.type === 'ep' ? ' : versé' : ' : payé'));
     }
     else if (act === 'cat'){
       var k = d.id ? cat(d.id) : null;
@@ -375,6 +427,7 @@ if (typeof document !== 'undefined') (function(){
       UI.form = p ? { kind: 'pot', id: p.id, name: p.name, amt: plain(p.bal) || '0' } : { kind: 'pot', name: '', amt: '' }; openSheet();
     }
     else if (act === 'solde'){ UI.form = { kind: 'solde', amt: '' }; openSheet(); }
+    else if (act === 'debut'){ var o = opener(S); UI.form = { kind: 'debut', cat: o ? o.id : '' }; openSheet(); }
     else if (act === 'f-type'){ grab(); if (UI.form.type !== d.v){ UI.form.type = d.v; if (UI.form.kind === 'tx') UI.form.cat = ''; else if (d.v === 'ep' && !pot(UI.form.pot)) UI.form.pot = S.pots[0] ? S.pots[0].id : ''; } renderSheet(); }
     else if (act === 'f-cat'){ grab(); UI.form.cat = d.v; renderSheet(); }
     else if (act === 'f-save') saveForm();
@@ -386,7 +439,7 @@ if (typeof document !== 'undefined') (function(){
     else if (act === 'start'){
       var a = parseAmt($('#w-amt').value);
       if (isNaN(a)){ $('#w-err').textContent = 'Indique ton solde, par exemple 943,92.'; return; }
-      S.anchor = { month: NOW, amount: a }; save(); render();
+      S.anchor = { date: TODAY, amount: a }; save(); render();
     }
   });
   $('#veil').addEventListener('click', closeSheet);
