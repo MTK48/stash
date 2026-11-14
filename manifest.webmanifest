@@ -1,0 +1,16 @@
+{
+  "name": "Stash",
+  "short_name": "Stash",
+  "description": "Budget mensuel simple, données sur l'appareil.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0d1512",
+  "theme_color": "#0d1512",
+  "lang": "fr",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "icon-maskable.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
+}
