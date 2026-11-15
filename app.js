@@ -1,6 +1,6 @@
 'use strict';
 /* Stash — budget mensuel. Données stockées uniquement sur l'appareil (localStorage). */
-var KEY = 'stash.v1', VERSION = '1.3';
+var KEY = 'stash.v1', VERSION = '1.4';
 
 /* ---------- calculs (purs) ---------- */
 function r2(n){ return Math.round((n + Number.EPSILON) * 100) / 100; }
@@ -268,6 +268,9 @@ if (typeof document !== 'undefined') (function(){
     h += '<h2>Compte</h2><div class="list"><button class="row" data-act="solde"><div class="g"><div class="t">Recaler le solde</div><div class="s">Si l’appli ne correspond plus à ta banque</div></div><div class="a num">' + fmt(stats(S, PS[CI]).bal) + '</div></button></div>';
     h += '<h2>Sauvegarde</h2><div class="card"><p class="hint">Tes données restent uniquement sur ce téléphone. Exporte-les de temps en temps pour ne rien perdre.<br>Dernier export : ' +
       (S.lastExport ? new Date(S.lastExport).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' }) : 'jamais') + '</p><div class="btns"><button class="btn" data-act="export">Exporter</button><button class="btn ghost" data-act="import">Importer</button></div></div>';
+    h += '<h2>Remise à zéro</h2><div class="card"><p class="hint">Pense à exporter avant : une remise à zéro ne peut pas être annulée.</p>' +
+      '<button class="btn danger" data-act="reset-tx">Effacer les opérations</button><p class="hint" style="margin-top:8px">Garde tes catégories, tes montants prévus, tes placements et ton solde actuel.</p>' +
+      '<button class="btn danger" data-act="reset-all">Tout remettre à zéro</button><p class="hint" style="margin:8px 2px 0">Efface tout et revient à l’écran de départ.</p></div>';
     if (installEvt) h += '<h2>Installation</h2><div class="card"><p class="hint">Ajoute Stash sur ton écran d’accueil, comme une vraie appli.</p><button class="btn" data-act="install">Installer l’appli</button></div>';
     h += '<p class="hint" style="text-align:center;margin-top:22px">Stash · version ' + VERSION + '</p>';
     return h;
@@ -464,6 +467,18 @@ if (typeof document !== 'undefined') (function(){
     else if (act === 'close') closeSheet();
     else if (act === 'export') doExport();
     else if (act === 'import'){ $('#file').value = ''; $('#file').click(); }
+    else if (act === 'reset-tx'){
+      var nt = S.tx.length;
+      if (!confirm('Effacer ' + (nt > 1 ? 'les ' + nt + ' opérations' : nt ? 'l’opération' : 'les opérations') + ' ? Tes catégories, montants prévus, placements et ton solde actuel sont conservés.')) return;
+      var keep = stats(S, PS[CI]).bal; // le solde affiché aujourd'hui devient le nouveau point de départ
+      S.tx = []; S.anchor = { date: TODAY, amount: keep };
+      S.cats.forEach(function(c){ delete c.autoLast; if (c.auto) c.autoFrom = TODAY; });
+      UI.i = -1; UI.tab = 'mois'; save(); render(); window.scrollTo(0, 0); toast('Opérations effacées');
+    }
+    else if (act === 'reset-all'){
+      if (!confirm('Tout effacer : opérations, catégories, montants prévus et placements ? L’appli repart de l’écran de départ.')) return;
+      S = defaults(); UI.i = -1; UI.tab = 'mois'; save(); render(); window.scrollTo(0, 0); toast('Appli remise à zéro');
+    }
     else if (act === 'install'){ if (installEvt){ installEvt.prompt(); installEvt = null; render(); } }
     else if (act === 'start'){
       var a = parseAmt($('#w-amt').value);
