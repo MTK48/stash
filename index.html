@@ -131,13 +131,24 @@ label.f{display:block;font-size:12.5px;color:var(--mut);font-weight:600;margin:0
 .leg{display:flex;gap:16px;font-size:12.5px;color:var(--mut);margin-top:10px}
 .leg i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:6px}
 #toast{position:fixed;left:50%;bottom:calc(104px + env(safe-area-inset-bottom));transform:translate(-50%,20px);background:var(--txt);color:var(--bg);
-  padding:10px 16px;border-radius:99px;font-weight:700;font-size:14px;opacity:0;transition:.25s;z-index:20;pointer-events:none;white-space:nowrap}
+  padding:10px 16px;border-radius:99px;font-weight:700;font-size:14px;opacity:0;transition:.25s;z-index:20;pointer-events:none;width:max-content;max-width:calc(100vw - 32px);text-align:center}
 #toast.on{opacity:1;transform:translate(-50%,0)}
 .welcome{padding:8vh 6px 0;text-align:center}
 .welcome .logo{width:84px;height:84px;border-radius:26px;margin:0 auto 18px;display:block}
 .welcome h1{font-size:32px;margin:0 0 6px;letter-spacing:-.02em}
 .welcome p{color:var(--mut);margin:0 0 26px}
 .welcome .card{text-align:left}
+/* sauvegarde en ligne */
+.cst{font-size:13.5px;font-weight:700;color:var(--acc);margin:0 2px 12px}
+.cst.warn{color:var(--amb)}
+.cst.busy{color:var(--mut)}
+.choice{background:var(--bg);border:1px solid var(--line);border-radius:16px;padding:12px 12px 2px;margin-bottom:12px}
+.choice .btns{margin-bottom:10px}
+.lnk{display:block;margin:14px auto 2px;color:var(--mut);font-size:13.5px;font-weight:600;text-decoration:underline}
+.card.found b{display:block;margin:0 2px 4px}
+.card.found .hint{margin-bottom:10px}
+.card.warn{border-color:#f3c96966}
+.btn:disabled{opacity:.6}
 </style>
 </head>
 <body>

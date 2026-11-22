@@ -1,6 +1,6 @@
 'use strict';
 /* Stash — budget mensuel. Données stockées uniquement sur l'appareil (localStorage). */
-var KEY = 'stash.v1', VERSION = '1.4';
+var KEY = 'stash.v1', VERSION = '1.5';
 
 /* ---------- calculs (purs) ---------- */
 function r2(n){ return Math.round((n + Number.EPSILON) * 100) / 100; }
@@ -135,7 +135,7 @@ if (typeof document !== 'undefined') (function(){
     try { var o = JSON.parse(localStorage.getItem(KEY)); if (validState(o)) return normalize(o); } catch (e) {}
     return defaults();
   }
-  function save(){ try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { toast('Enregistrement impossible'); } }
+  function save(){ try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { toast('Enregistrement impossible'); } try { cloudMark(); } catch (e) {} }
   function cat(id){ for (var i = 0; i < S.cats.length; i++) if (S.cats[i].id === id) return S.cats[i]; return null; }
   function tcls(type){ return type === 'rev' ? ' rev' : type === 'ep' ? ' ep' : ''; }
   function pot(id){ for (var i = 0; i < S.pots.length; i++) if (S.pots[i].id === id) return S.pots[i]; return null; }
@@ -168,7 +168,7 @@ if (typeof document !== 'undefined') (function(){
 
   /* --- écran Mois --- */
   function vMois(){
-    var st = stats(S, P()), cur = UI.i === CI, h = top();
+    var st = stats(S, P()), cur = UI.i === CI, h = top() + cloudWarn();
     h += '<div class="card hero"><div class="lbl">' + (cur ? 'Solde actuel' : UI.i < CI ? 'Solde final' : 'Solde prévu') + '</div>' +
       '<div class="big num' + (st.bal < 0 ? ' neg' : '') + '">' + fmt(st.bal) + '</div><div class="trio num">' +
       '<div><span>Départ</span><b>' + fmt(st.start) + '</b></div>' +
@@ -266,9 +266,10 @@ if (typeof document !== 'undefined') (function(){
     h += '<h2>Début du mois</h2><div class="list"><button class="row" data-act="debut"><div class="g"><div class="t">' + (op ? 'À l’encaissement : ' + esc(op.name) : 'Le 1er de chaque mois') +
       '</div><div class="s">' + (op ? 'Un nouveau mois démarre quand tu encaisses ce revenu' : 'Touche pour démarrer le mois à la paie') + '</div></div></button></div>';
     h += '<h2>Compte</h2><div class="list"><button class="row" data-act="solde"><div class="g"><div class="t">Recaler le solde</div><div class="s">Si l’appli ne correspond plus à ta banque</div></div><div class="a num">' + fmt(stats(S, PS[CI]).bal) + '</div></button></div>';
-    h += '<h2>Sauvegarde</h2><div class="card"><p class="hint">Tes données restent uniquement sur ce téléphone. Exporte-les de temps en temps pour ne rien perdre.<br>Dernier export : ' +
+    h += '<h2>Sauvegarde en ligne</h2>' + cloudCard();
+    h += '<h2>Sauvegarde fichier</h2><div class="card"><p class="hint">' + (CLOUD.url ? 'En plus de la copie en ligne, tu peux exporter un fichier.' : 'Sans sauvegarde en ligne, tes données restent uniquement sur ce téléphone. Exporte-les de temps en temps pour ne rien perdre.') + '<br>Dernier export : ' +
       (S.lastExport ? new Date(S.lastExport).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' }) : 'jamais') + '</p><div class="btns"><button class="btn" data-act="export">Exporter</button><button class="btn ghost" data-act="import">Importer</button></div></div>';
-    h += '<h2>Remise à zéro</h2><div class="card"><p class="hint">Pense à exporter avant : une remise à zéro ne peut pas être annulée.</p>' +
+    h += '<h2>Remise à zéro</h2><div class="card"><p class="hint">' + (CLOUD.url ? 'Ton Drive garde une copie par jour pendant 30 jours : tu pourras revenir en arrière.' : 'Pense à exporter avant : une remise à zéro ne peut pas être annulée.') + '</p>' +
       '<button class="btn danger" data-act="reset-tx">Effacer les opérations</button><p class="hint" style="margin-top:8px">Garde tes catégories, tes montants prévus, tes placements et ton solde actuel.</p>' +
       '<button class="btn danger" data-act="reset-all">Tout remettre à zéro</button><p class="hint" style="margin:8px 2px 0">Efface tout et revient à l’écran de départ.</p></div>';
     if (installEvt) h += '<h2>Installation</h2><div class="card"><p class="hint">Ajoute Stash sur ton écran d’accueil, comme une vraie appli.</p><button class="btn" data-act="install">Installer l’appli</button></div>';
@@ -277,9 +278,13 @@ if (typeof document !== 'undefined') (function(){
   }
 
   function vWelcome(){
-    return '<div class="welcome"><img class="logo" src="icon.svg" alt=""><h1>Stash</h1><p>Ton budget du mois, sans tableur.</p><div class="card"><label class="f" for="w-amt">Solde actuel de ton compte courant</label>' +
+    var f = CLOUD.found;
+    return '<div class="welcome"><img class="logo" src="icon.svg" alt=""><h1>Stash</h1><p>Ton budget du mois, sans tableur.</p>' +
+      (f ? '<div class="card found"><b>Sauvegarde trouvée dans ton Drive</b><p class="hint">Copie ' + esc(ofTxt(f.le)) + ' : ' + esc(nbTxt(f.nb)) + '.</p><button class="btn" data-act="c-restore-found"' + (CLOUD.busy ? ' disabled' : '') + '>' + (CLOUD.busy ? 'Récupération…' : 'Restaurer') + '</button></div>' : '') +
+      '<div class="card"><label class="f" for="w-amt">Solde actuel de ton compte courant</label>' +
       '<div class="amt"><input id="w-amt" inputmode="decimal" placeholder="0,00" autocomplete="off"><span>€</span></div><div class="err" id="w-err"></div><button class="btn" data-act="start">Commencer</button></div>' +
-      '<button class="btn ghost" data-act="import">J’ai un fichier de démarrage</button></div>';
+      '<button class="btn ghost" data-act="import">J’ai un fichier de démarrage</button>' +
+      (CLOUD.url ? '' : '<button class="btn ghost" style="margin-top:10px" data-act="c-open">Récupérer ma sauvegarde Drive</button>') + '</div>';
   }
 
   function render(){
@@ -329,6 +334,9 @@ if (typeof document !== 'undefined') (function(){
       h = head('Recaler le solde') + '<p class="hint">Indique le solde réel de ton compte courant aujourd’hui. Tes opérations ne sont pas modifiées.</p>' +
         '<div class="amt"><input id="f-amt" inputmode="decimal" placeholder="0,00" autocomplete="off" value="' + esc(f.amt) + '"><span>€</span></div><div class="err" id="f-err"></div><button class="btn" data-act="f-save">Enregistrer</button>';
     }
+    if (f.kind === 'cloud'){
+      h = head('Sauvegarde en ligne') + '<p class="hint">Colle le lien de ton script Google de sauvegarde (il finit par <b>/exec</b>). Stash récupère alors la dernière copie de ton Drive.</p>' + cloudForm();
+    }
     if (f.kind === 'debut'){
       h = head('Début du mois') + '<p class="hint">Choisis ce qui démarre un nouveau mois. Avec un revenu, le mois commence le jour où tu l’encaisses, même si la date change d’un mois à l’autre.</p>' +
         '<div class="chips"><button class="chip' + (!f.cat ? ' on' : '') + '" data-act="f-cat" data-v="">Le 1er du mois</button>' + S.cats.filter(function(c){ return c.type === 'rev'; }).map(function(c){
@@ -347,6 +355,7 @@ if (typeof document !== 'undefined') (function(){
   function fail(msg){ var e = $('#f-err'); if (e) e.textContent = msg; }
 
   function saveForm(){
+    if (UI.form && UI.form.kind === 'cloud') return cloudConnect();
     grab(); var f = UI.form, a = parseAmt(f.amt);
     if (f.kind === 'tx'){
       if (!(a > 0)) return fail('Indique un montant supérieur à 0.');
@@ -422,6 +431,149 @@ if (typeof document !== 'undefined') (function(){
     r.readAsText(file);
   }
 
+  /* --- sauvegarde en ligne : le script Google de l'utilisateur range une copie dans son Drive.
+     Réglage gardé à part des données (clé « stash-cloud »), pour survivre à un import ou une remise à zéro.
+     Une appli vide (jamais commencée) n'envoie jamais rien. --- */
+  var CK = 'stash-cloud';
+  var CLOUD = { url: '', last: null, lastErr: null, errSince: null, dirty: false, busy: false, again: false, t: null, found: null, choice: null, draft: '', msg: '' };
+  function cloudLoad(){ try { var o = JSON.parse(localStorage.getItem(CK) || '{}') || {}; CLOUD.url = o.url || ''; CLOUD.last = o.last || null; CLOUD.lastErr = o.lastErr || null; CLOUD.errSince = o.errSince || null; CLOUD.dirty = !!o.dirty; } catch (e) {} }
+  function cloudSave(){ try { localStorage.setItem(CK, JSON.stringify({ url: CLOUD.url, last: CLOUD.last, lastErr: CLOUD.lastErr, errSince: CLOUD.errSince, dirty: CLOUD.dirty })); } catch (e) {} }
+  function cloudUrlOk(v){ return /^https:\/\/script\.google\.com\/[^\s]+\/exec$/.test(String(v || '').trim()); }
+  function countOf(s){ var n = function(k){ return s && Array.isArray(s[k]) ? s[k].length : 0; }; return { o: n('tx'), p: n('pots'), c: n('cats'), a: !!(s && s.anchor) }; }
+  function isEmptyNb(nb){ return !nb || (!nb.o && !nb.p && !nb.a); }
+  function nbTxt(nb){
+    var p = [];
+    if (nb.o) p.push(nb.o + ' opération' + (nb.o > 1 ? 's' : ''));
+    if (nb.p) p.push(nb.p + ' placement' + (nb.p > 1 ? 's' : ''));
+    return p.length ? p.join(', ') : 'solde de départ seulement';
+  }
+  function whenTxt(v){
+    var d = new Date(v), j = iso(d), hm = d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+    var t = iso(new Date()), y = dayAdd(t, -1);
+    return (j === t ? 'aujourd’hui' : j === y ? 'hier' : dLabel(j)) + ' à ' + hm;
+  }
+  function ofTxt(v){ var w = whenTxt(v); return /^(aujourd|hier)/.test(w) ? 'd’' + w : 'du ' + w; } // « copie d’hier à… », « copie du samedi… »
+  function cloudErrMsg(e){
+    if (e && e.stash) return e.stash;
+    if (!navigator.onLine) return 'Pas de connexion : nouvel essai plus tard.';
+    return 'Le lien ne répond pas. Vérifie le déploiement du script (« Qui a accès : Tout le monde »).';
+  }
+  async function cloudReq(url, body){
+    var opt = body ? { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(body), redirect: 'follow', cache: 'no-store' } : { redirect: 'follow', cache: 'no-store' };
+    var r = await fetch(url, opt), j;
+    if (!r.ok) throw { stash: 'Le script Google a répondu par une erreur (' + r.status + ').' };
+    try { j = await r.json(); } catch (e) { throw { stash: 'Le lien ne renvoie pas une sauvegarde Stash. Vérifie « Qui a accès : Tout le monde ».' }; }
+    if (!j || j.ok !== true) throw { stash: (j && j.erreur) || 'Réponse inattendue du script.' };
+    return j;
+  }
+  function cloudGet(url, action){ return cloudReq(url + (url.indexOf('?') < 0 ? '?' : '&') + 'action=' + action); }
+  function cloudRefresh(){
+    if (UI.form && UI.form.kind === 'cloud') renderSheet();
+    else if (!UI.form) render();
+  }
+  function cloudMark(){
+    if (!CLOUD.url) return;
+    CLOUD.dirty = true; cloudSave();
+    clearTimeout(CLOUD.t); CLOUD.t = setTimeout(function(){ cloudPush(false); }, 4000);
+  }
+  async function cloudPush(manual){
+    if (!CLOUD.url) return false;
+    if (CLOUD.busy){ CLOUD.again = true; return false; }
+    clearTimeout(CLOUD.t);
+    if (isEmptyNb(countOf(S))){ CLOUD.dirty = false; cloudSave(); if (manual) toast('Rien à sauvegarder : l’appli est vide'); return false; }
+    CLOUD.busy = true; cloudRefresh();
+    var ok = false;
+    try {
+      await cloudReq(CLOUD.url, { action: 'save', sauvegarde: S });
+      CLOUD.last = new Date().toISOString(); CLOUD.lastErr = null; CLOUD.errSince = null; CLOUD.dirty = false; ok = true;
+      if (manual) toast('Copie envoyée dans ton Drive');
+    } catch (e){
+      CLOUD.lastErr = cloudErrMsg(e); if (!CLOUD.errSince) CLOUD.errSince = new Date().toISOString();
+      if (manual) toast('Envoi impossible');
+    } finally { CLOUD.busy = false; cloudSave(); cloudRefresh(); }
+    if (CLOUD.again){ CLOUD.again = false; cloudMark(); }
+    return ok;
+  }
+  async function cloudConnect(){
+    var el = $('#c-url'), v = (el ? el.value : CLOUD.draft).trim();
+    CLOUD.draft = v; CLOUD.msg = '';
+    if (!cloudUrlOk(v)){ CLOUD.msg = 'Lien non reconnu : copie l’adresse complète, qui finit par /exec.'; return cloudRefresh(); }
+    CLOUD.busy = true; CLOUD.choice = null; cloudRefresh();
+    try {
+      var res = await cloudGet(v, 'ping');
+      if (res.app !== 'stash-sauvegarde') throw { stash: 'Ce lien n’est pas le script de sauvegarde de Stash.' };
+      CLOUD.busy = false;
+      var dr = res.derniere && !isEmptyNb(res.derniere.nb) ? res.derniere : null;
+      if (dr && !isEmptyNb(countOf(S))){ // les deux ont des données : rien n'est branché tant que tu n'as pas choisi
+        CLOUD.choice = { url: v, le: dr.le, nb: dr.nb }; return cloudRefresh();
+      }
+      CLOUD.choice = { url: v }; cloudAdopt();
+      if (isEmptyNb(countOf(S))){
+        if (dr){ await cloudRestore(true); }
+        else { if (UI.form && UI.form.kind === 'cloud') closeSheet(); render(); toast('Connecté à ton Drive'); }
+      } else {
+        render(); toast('Connecté à ton Drive'); await cloudPush(false);
+      }
+    } catch (e){ CLOUD.busy = false; CLOUD.msg = cloudErrMsg(e); cloudRefresh(); }
+  }
+  function cloudAdopt(){ // branche le lien en attente
+    CLOUD.url = CLOUD.choice.url; CLOUD.choice = null; CLOUD.draft = ''; CLOUD.lastErr = null; CLOUD.errSince = null; cloudSave();
+  }
+  async function cloudKeepDrive(){
+    var c = CLOUD.choice; cloudAdopt();
+    if (!(await cloudRestore(true))){ CLOUD.url = ''; CLOUD.choice = c; cloudSave(); cloudRefresh(); } // échec : on ne laisse pas le téléphone écraser le Drive
+  }
+  async function cloudRestore(force){
+    if (!CLOUD.url) return false;
+    CLOUD.busy = true; cloudRefresh();
+    try {
+      var res = await cloudGet(CLOUD.url, 'load'), o = res.sauvegarde;
+      if (!o || !validState(o)){ toast('Aucune copie dans ton Drive'); return false; }
+      if (!force && !isEmptyNb(countOf(S)) && !confirm('Remplacer les données de ce téléphone par la copie de ton Drive (' + nbTxt(countOf(o)) + ') ?')) return false;
+      S = normalize(o);
+      try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {}
+      clearTimeout(CLOUD.t); CLOUD.dirty = false; CLOUD.last = res.le || new Date().toISOString(); CLOUD.lastErr = null; CLOUD.errSince = null; cloudSave();
+      CLOUD.found = null; CLOUD.busy = false;
+      if (UI.form) closeSheet();
+      UI.tab = 'mois'; UI.i = -1; render(); window.scrollTo(0, 0); toast('Données restaurées');
+      return true;
+    } catch (e){ CLOUD.msg = cloudErrMsg(e); toast('Récupération impossible'); return false; }
+    finally { CLOUD.busy = false; cloudRefresh(); }
+  }
+  function cloudOff(){
+    clearTimeout(CLOUD.t);
+    CLOUD.url = ''; CLOUD.last = null; CLOUD.lastErr = null; CLOUD.errSince = null; CLOUD.dirty = false; CLOUD.choice = null; CLOUD.found = null; CLOUD.msg = '';
+    cloudSave(); render(); toast('Sauvegarde en ligne déconnectée');
+  }
+  function cloudStartup(){
+    if (!CLOUD.url) return;
+    if (isEmptyNb(countOf(S))){
+      cloudGet(CLOUD.url, 'ping').then(function(res){ if (res.derniere && !isEmptyNb(res.derniere.nb)){ CLOUD.found = res.derniere; cloudRefresh(); } }).catch(function(){});
+      return;
+    }
+    if (CLOUD.dirty || !CLOUD.last || Date.now() - new Date(CLOUD.last).getTime() > 24 * 36e5) cloudPush(false);
+  }
+  function cloudForm(){
+    var dis = CLOUD.busy ? ' disabled' : '', c = CLOUD.choice;
+    if (c && c.nb) return '<div class="choice"><p class="hint">Ton Drive contient déjà une copie <b>' + esc(ofTxt(c.le)) + '</b> (' + esc(nbTxt(c.nb)) + '), et ce téléphone a aussi des données. Laquelle garder ?</p><div class="btns"><button class="btn ghost" data-act="c-keep-drive"' + dis + '>Celle du Drive</button><button class="btn" data-act="c-keep-phone"' + dis + '>Ce téléphone</button></div></div>' +
+      '<div class="err">' + esc(CLOUD.msg) + '</div><button class="lnk" data-act="c-choice-cancel">Annuler</button>';
+    return '<label class="f" for="c-url">Lien du script de sauvegarde</label><input class="in" id="c-url" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="https://script.google.com/macros/s/…/exec" value="' + esc(CLOUD.draft) + '"' + dis + '>' +
+      '<div class="err">' + esc(CLOUD.msg) + '</div><button class="btn" data-act="c-connect"' + dis + '>' + (CLOUD.busy ? 'Connexion…' : 'Connecter') + '</button>';
+  }
+  function cloudCard(){
+    var dis = CLOUD.busy ? ' disabled' : '';
+    if (!CLOUD.url) return '<div class="card">' + (CLOUD.choice && CLOUD.choice.nb ? '' : '<p class="hint">Stash peut envoyer une copie de tes données dans ton <b>Google Drive</b> après chaque changement. Colle ici le lien de ton script Google de sauvegarde (il finit par <b>/exec</b>).</p>') + cloudForm() + '</div>';
+    var st = CLOUD.busy ? '<p class="cst busy">Envoi en cours…</p>' : CLOUD.lastErr ? '<p class="cst warn">' + esc(CLOUD.lastErr) + '</p>' :
+      CLOUD.last ? '<p class="cst">Dernière copie dans ton Drive : ' + esc(whenTxt(CLOUD.last)) + '</p>' : '<p class="cst busy">' + (isEmptyNb(countOf(S)) ? 'Pas encore de copie : la première partira dès que tu auras commencé.' : 'Pas encore de copie : envoi dans quelques secondes.') + '</p>';
+    var h = '<div class="card"><p class="hint">Connectée à ton Google Drive (dossier « Stash – sauvegardes »). Une copie part après chaque changement ; une appli vide n’envoie jamais rien.</p>' + st;
+    return h + '<div class="btns"><button class="btn" data-act="c-push"' + dis + '>Sauvegarder</button><button class="btn ghost" data-act="c-restore"' + dis + '>Restaurer</button></div>' +
+      '<button class="lnk" data-act="c-off">Déconnecter</button></div>';
+  }
+  function cloudWarn(){ // l'envoi échoue depuis plus de 2 jours : on le signale sur l'écran du mois
+    if (!CLOUD.url || !CLOUD.lastErr || !CLOUD.errSince || Date.now() - new Date(CLOUD.errSince).getTime() < 2 * 864e5) return '';
+    return '<div class="card found warn"><b>La sauvegarde en ligne ne passe plus</b><p class="hint">Depuis le ' + esc(dShort(iso(new Date(CLOUD.errSince)))) + ' : ' + esc(CLOUD.lastErr) + '</p><button class="btn ghost" data-act="c-push"' + (CLOUD.busy ? ' disabled' : '') + '>Réessayer</button></div>';
+  }
+
   /* --- événements --- */
   document.addEventListener('click', function(ev){
     var b = ev.target.closest('[data-act],[data-tab]'); if (!b) return;
@@ -478,19 +630,36 @@ if (typeof document !== 'undefined') (function(){
     else if (act === 'reset-all'){
       if (!confirm('Tout effacer : opérations, catégories, montants prévus et placements ? L’appli repart de l’écran de départ.')) return;
       S = defaults(); UI.i = -1; UI.tab = 'mois'; save(); render(); window.scrollTo(0, 0); toast('Appli remise à zéro');
+      cloudStartup(); // si le Drive a une copie, l'écran de départ propose de la restaurer
     }
+    else if (act === 'c-open'){ CLOUD.msg = ''; UI.form = { kind: 'cloud' }; openSheet(); setTimeout(function(){ var i = $('#c-url'); if (i) i.focus(); }, 260); }
+    else if (act === 'c-connect') cloudConnect();
+    else if (act === 'c-push') cloudPush(true);
+    else if (act === 'c-restore') cloudRestore(false);
+    else if (act === 'c-restore-found') cloudRestore(true);
+    else if (act === 'c-keep-drive') cloudKeepDrive();
+    else if (act === 'c-keep-phone'){ cloudAdopt(); cloudPush(true); }
+    else if (act === 'c-choice-cancel'){ CLOUD.choice = null; CLOUD.msg = ''; cloudRefresh(); }
+    else if (act === 'c-off') cloudOff();
     else if (act === 'install'){ if (installEvt){ installEvt.prompt(); installEvt = null; render(); } }
     else if (act === 'start'){
       var a = parseAmt($('#w-amt').value);
       if (isNaN(a)){ $('#w-err').textContent = 'Indique ton solde, par exemple 943,92.'; return; }
-      S.anchor = { date: TODAY, amount: a }; save(); render();
+      if (CLOUD.found && !confirm('Ton Drive contient une copie (' + nbTxt(CLOUD.found.nb) + '). Repartir de zéro quand même ? Elle sera remplacée par tes nouvelles données.')) return;
+      CLOUD.found = null; S.anchor = { date: TODAY, amount: a }; save(); render();
     }
   });
   $('#veil').addEventListener('click', closeSheet);
   $('#file').addEventListener('change', function(){ if (this.files[0]) doImport(this.files[0]); });
-  document.addEventListener('keydown', function(e){ if (e.key === 'Enter' && UI.form && e.target.tagName === 'INPUT'){ e.preventDefault(); saveForm(); } });
+  document.addEventListener('keydown', function(e){
+    if (e.key !== 'Enter' || e.target.tagName !== 'INPUT') return;
+    if (UI.form){ e.preventDefault(); saveForm(); }
+    else if (e.target.id === 'c-url'){ e.preventDefault(); cloudConnect(); }
+  });
   document.addEventListener('visibilitychange', function(){ if (!document.hidden && !UI.form) render(); });
   window.addEventListener('beforeinstallprompt', function(e){ e.preventDefault(); installEvt = e; if (UI.tab === 'regl') render(); });
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(function(){});
+  cloudLoad();
   render();
+  setTimeout(cloudStartup, 400);
 })();
